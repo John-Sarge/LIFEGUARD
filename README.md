@@ -25,7 +25,7 @@ LIFEGUARD is a Python-based system designed to interpret and process spoken natu
 2. **Audio Preprocessing:** Incoming audio is denoised and filtered to improve recognition accuracy.
 3. **Speech Recognition:** The processed audio is transcribed to text using the Vosk STT engine.
 4. **Intent Extraction:** The text is analyzed to identify the Commander’s intent and extract actionable entities (such as GPS coordinates, targets, and locations) using spaCy with custom rules and entity recognition.
-5. **Command Translation:** If a valid intent is detected (e.g., "Search at latitude 34.05 longitude -118.24 for a person in a life ring"), the system prepares corresponding MAVLink commands to instruct the autonomous unit.
+5. **Command Translation:** If a valid intent is detected (e.g., "Search at latitude 41.37 longitude -72.09 for a person in a life ring"), the system prepares corresponding MAVLink commands to instruct the autonomous unit.
 6. **User Confirmation:** Before sending commands to the vehicle, the system asks the operator to confirm the interpreted intent.
 7. **Action Execution:** Upon confirmation, the system sends the appropriate commands to the autonomous unit over MAVLink.
 
@@ -108,7 +108,7 @@ LIFEGUARD will:
    ```
 
 3. **Speak your command into the microphone.**
-   - Example: "Search at latitude 34.05 longitude -118.24 for a person in a life ring."
+   - Example: "Search at latitude 41.37 longitude -72.09 for a person in a life ring."
    - The system will transcribe, understand, and prompt for confirmation.
 
 4. **Confirm the interpreted intent when prompted.**
