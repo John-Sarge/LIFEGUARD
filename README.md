@@ -131,12 +131,6 @@ LIFEGUARD will:
 
 ---
 
-## License
-
-MIT License (or as specified in the repository)
-
----
-
 ## Acknowledgments
 
 Built with open-source libraries: Vosk, spaCy, pymavlink, and community-contributed tools.
