@@ -35,7 +35,7 @@ LIFEGUARD is a Python-based system designed to interpret and process spoken natu
 
 A field operator says:
 
-> "Search at latitude 34.05 longitude -118.24 for a person in a life ring."
+> "Search at latitude 41.37 longitude -72.09 for a person in a life ring."
 
 LIFEGUARD will:
 
@@ -71,41 +71,25 @@ LIFEGUARD will:
 
 ### Installation Steps
 
+1. **(Optional but Recommended) Create a Virtual Environment**
+   ```bash
+   python3 -m venv command_intent
+   source command_intent/bin/activate  # On Windows: command_intent\Scripts\activate
+   ```
+   
 1. **Clone the Repository**
    ```bash
    git clone https://github.com/John-Sarge/LIFEGUARD.git
    cd LIFEGUARD
    ```
-
-2. **(Optional but Recommended) Create a Virtual Environment**
+   
+3. **Install Dependencies**
    ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   chmod +x setup.sh
+   ./setup.sh
    ```
 
-3. **Install Python Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-   If `requirements.txt` is missing, install manually:
-   ```bash
-   pip install vosk spacy pyaudio noisereduce pymavlink lat-lon-parser numpy scipy
-   ```
-
-4. **Install Vosk Model**
-   - Download the English Vosk model (e.g., `vosk-model-small-en-us-0.15`) from [Vosk Models](https://alphacephei.com/vosk/models).
-   - Create a directory called `vosk_models` in the repo root:
-     ```bash
-     mkdir vosk_models
-     ```
-   - Extract the downloaded model into that directory, so you have `vosk_models/vosk-model-small-en-us-0.15`.
-
-5. **Install spaCy Language Model**
-   ```bash
-   python -m spacy download en_core_web_sm
-   ```
-
-6. **(Linux Only) Additional Audio Dependencies**
+4. **(Linux Only) Additional Audio Dependencies**
    - You may need to install system dependencies for PyAudio:
      ```bash
      sudo apt-get install portaudio19-dev python3-pyaudio
@@ -164,5 +148,3 @@ Built with open-source libraries: Vosk, spaCy, pymavlink, and community-contribu
 LIFEGUARD enables operators to naturally and effectively pass Commander’s Intent to autonomous units, bridging voice commands and machine action for efficient, reliable, and intuitive search and rescue deployments.
 
 ---
-
-*For further details, badges, or additional technical setup instructions, feel free to open an issue or discussion!*
