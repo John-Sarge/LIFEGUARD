@@ -21,10 +21,10 @@ from spacy.tokens import Doc, Span
 from spacy.language import Language
 from spacy.matcher import Matcher, PhraseMatcher
 from spacy.pipeline import EntityRuler
-from lat_lon_parser import parse as parse_lat_lon_external # [15]
+from lat_lon_parser import parse as parse_lat_lon_external 
 
 # MAVLink Communication
-from pymavlink import mavutil, mavwp # [16, 18]
+from pymavlink import mavutil, mavwp 
 
 # --- CONFIGURATION CONSTANTS ---
 
@@ -38,7 +38,7 @@ AUDIO_FRAMES_PER_BUFFER = 8192
 AUDIO_READ_CHUNK = 4096 # Amount of data to read from stream at a time
 
 # Audio Pre-processing Configuration
-NOISE_REDUCE_TIME_CONSTANT_S = 2.0 # For noisereduce [10]
+NOISE_REDUCE_TIME_CONSTANT_S = 2.0 # For noisereduce 
 NOISE_REDUCE_PROP_DECREASE = 0.9
 BANDPASS_LOWCUT_HZ = 300.0
 BANDPASS_HIGHCUT_HZ = 3400.0
@@ -65,12 +65,12 @@ def apply_noise_reduction(audio_data_int16, sample_rate):
     audio_data_float = audio_data_int16.astype(np.float32) / 32767.0
     
     # Perform noise reduction (non-stationary is default)
-    # Parameters from Section 3.4.1 of the report
+    
     reduced_audio_float = nr.reduce_noise(y=audio_data_float, 
                                           sr=sample_rate,
-                                          time_constant_s=NOISE_REDUCE_TIME_CONSTANT_S, # [10]
-                                          prop_decrease=NOISE_REDUCE_PROP_DECREASE, # [10]
-                                          n_fft=512) # Recommended for speech [10]
+                                          time_constant_s=NOISE_REDUCE_TIME_CONSTANT_S, 
+                                          prop_decrease=NOISE_REDUCE_PROP_DECREASE, 
+                                          n_fft=512) # Recommended for speech 
     
     # Convert back to int16
     reduced_audio_int16 = (reduced_audio_float * 32767.0).astype(np.int16)
@@ -78,11 +78,11 @@ def apply_noise_reduction(audio_data_int16, sample_rate):
 
 def apply_bandpass_filter(audio_data, sample_rate):
     """Applies a band-pass filter to the audio data."""
-    # Parameters from Section 3.4.1 of the report
+    
     nyq = 0.5 * sample_rate
     low = BANDPASS_LOWCUT_HZ / nyq
     high = BANDPASS_HIGHCUT_HZ / nyq
-    b, a = butter(BANDPASS_ORDER, [low, high], btype='band') # [11]
+    b, a = butter(BANDPASS_ORDER, [low, high], btype='band') 
     filtered_audio = lfilter(b, a, audio_data)
     return filtered_audio.astype(audio_data.dtype)
 
@@ -94,8 +94,8 @@ class SpeechToText:
             print(f"ERROR: Vosk model not found at {model_path}. Please download and place it correctly.")
             raise FileNotFoundError(f"Vosk model not found at {model_path}")
         
-        self.model = vosk.Model(model_path) # [9]
-        self.recognizer = vosk.KaldiRecognizer(self.model, sample_rate) # [9]
+        self.model = vosk.Model(model_path) 
+        self.recognizer = vosk.KaldiRecognizer(self.model, sample_rate) 
         self.recognizer.SetWords(True) # Optional: for word-level timestamps
         print("STT (Vosk): Model loaded successfully.")
 
@@ -115,7 +115,7 @@ class SpeechToText:
 # Custom spaCy component for GPS parsing using lat-lon-parser
 @Language.factory("lat_lon_entity_recognizer", default_config={"gps_label": "LOCATION_GPS_COMPLEX"})
 def create_lat_lon_entity_recognizer(nlp: Language, name: str, gps_label: str):
-    return LatLonEntityRecognizer(nlp, gps_label) # [19, 20]
+    return LatLonEntityRecognizer(nlp, gps_label) 
 
 class LatLonEntityRecognizer:
     def __init__(self, nlp: Language, gps_label: str):
@@ -139,7 +139,7 @@ class LatLonEntityRecognizer:
             re.VERBOSE
         )
         if not Span.has_extension("parsed_gps_coords"):
-            Span.set_extension("parsed_gps_coords", default=None) # [20]
+            Span.set_extension("parsed_gps_coords", default=None) 
 
     def __call__(self, doc: Doc) -> Doc:
         new_entities = list(doc.ents)
@@ -178,13 +178,13 @@ class LatLonEntityRecognizer:
                         if not re.search(r'[EeWw]', lon_str) and not re.search(r'[+-]', lon_str):
                              pass # lat-lon-parser will handle it
 
-                        lat_val = parse_lat_lon_external(lat_str) # [15]
-                        lon_val = parse_lat_lon_external(lon_str) # [15]
+                        lat_val = parse_lat_lon_external(lat_str) 
+                        lon_val = parse_lat_lon_external(lon_str) 
                     except Exception:
                         lat_val, lon_val = None, None # Parsing as pair failed
 
                 if lat_val is not None and lon_val is not None:
-                    span = doc.char_span(start_char, end_char, label=self.gps_label, alignment_mode="expand") # [20, 21]
+                    span = doc.char_span(start_char, end_char, label=self.gps_label, alignment_mode="expand") 
                     if span is not None:
                         span._.set("parsed_gps_coords", {"latitude": lat_val, "longitude": lon_val})
                         
@@ -221,18 +221,17 @@ class LatLonEntityRecognizer:
 class NaturalLanguageUnderstanding:
     def __init__(self, spacy_model_name):
         try:
-            self.nlp = spacy.load(spacy_model_name) # [13, 14]
+            self.nlp = spacy.load(spacy_model_name) 
         except OSError:
             print(f"spaCy model '{spacy_model_name}' not found. Please download it: python -m spacy download {spacy_model_name}")
             raise
         
         # Add custom GPS parser to the pipeline
         if "lat_lon_entity_recognizer" not in self.nlp.pipe_names:
-            self.nlp.add_pipe("lat_lon_entity_recognizer", after="ner" if self.nlp.has_pipe("ner") else None) # [19, 20]
+            self.nlp.add_pipe("lat_lon_entity_recognizer", after="ner" if self.nlp.has_pipe("ner") else None) 
             print("NLU (spaCy): Custom lat_lon_entity_recognizer added to pipeline.")
 
         # Add EntityRuler for SAR-specific terms (landmarks, target descriptions)
-        # Based on Section 4.3.2 and 4.5 of the report
         if "sar_entity_ruler" not in self.nlp.pipe_names:
             ruler = self.nlp.add_pipe("entity_ruler", name="sar_entity_ruler", before="lat_lon_entity_recognizer" if "lat_lon_entity_recognizer" in self.nlp.pipe_names else ("ner" if self.nlp.has_pipe("ner") else None)) # [22, 23, 24, 25]
             
@@ -274,8 +273,7 @@ class NaturalLanguageUnderstanding:
         entities["raw_spacy_entities"] = extracted_spacy_ents
 
         # --- Rule-based Intent Recognition and Structured Entity Population ---
-        # Based on Section 4.3.3 of the report
-        
+                
         # Helper to get entities of a specific label
         def get_entity_values(label):
             return [e["text"] for e in extracted_spacy_ents if e["label"] == label]
@@ -360,7 +358,7 @@ class MavlinkController:
             else: # UDP/TCP connection
                 self.master = mavutil.mavlink_connection(self.connection_string, source_system=self.source_system_id) # [16]
             
-            self.master.wait_heartbeat(timeout=10) # [16]
+            self.master.wait_heartbeat(timeout=10) 
             print("MAVLink: Heartbeat received. Connection established.")
             print(f"MAVLink: Target system: {self.master.target_system}, component: {self.master.target_component}")
         except Exception as e:
@@ -372,7 +370,7 @@ class MavlinkController:
 
     def send_nav_waypoint(self, lat, lon, alt, hold_time=0, accept_radius=10, pass_radius=0, yaw_angle=float('nan')):
         """Sends a single MAV_CMD_NAV_WAYPOINT using MISSION_ITEM_INT."""
-        # Based on Section 5.2 of the report
+        
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot send waypoint.")
             return False
@@ -381,8 +379,8 @@ class MavlinkController:
         target_comp = self.master.target_component
         
         seq_num = 0  # For a single waypoint, sequence can be 0. For missions, it's incremental.
-        frame = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT # [26]
-        command_id = mavutil.mavlink.MAV_CMD_NAV_WAYPOINT # [26]
+        frame = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT 
+        command_id = mavutil.mavlink.MAV_CMD_NAV_WAYPOINT 
         is_current = 1  # Make this the current waypoint to navigate to (for immediate action in some modes)
         auto_cont = 1   # Autocontinue (relevant for missions)
         
@@ -391,7 +389,7 @@ class MavlinkController:
 
         print(f"MAVLink: Sending MAV_CMD_NAV_WAYPOINT to Lat: {lat}, Lon: {lon}, Alt: {alt}")
         try:
-            self.master.mav.mission_item_int_send( # [26]
+            self.master.mav.mission_item_int_send( 
                 target_sys,        # target_system
                 target_comp,       # target_component
                 seq_num,           # sequence
@@ -399,10 +397,10 @@ class MavlinkController:
                 command_id,        # command
                 is_current,        # current
                 auto_cont,         # autocontinue
-                float(hold_time),       # param1 (Hold time) [27]
-                float(accept_radius),   # param2 (Acceptance radius) [27]
-                float(pass_radius),     # param3 (Pass radius) [27]
-                float(yaw_angle),       # param4 (Yaw angle) [27]
+                float(hold_time),       # param1 (Hold time) 
+                float(accept_radius),   # param2 (Acceptance radius)
+                float(pass_radius),     # param3 (Pass radius)
+                float(yaw_angle),       # param4 (Yaw angle)
                 lat_int,           # x (latitude * 10^7)
                 lon_int,           # y (longitude * 10^7)
                 float(alt)         # z (altitude in meters)
@@ -427,7 +425,7 @@ class MavlinkController:
             print("MAVLink: Not connected. Cannot upload mission.")
             return False
 
-        wp_loader = mavwp.MAVWPLoader() # [26, 18]
+        wp_loader = mavwp.MAVWPLoader()
         
         for seq, wp_item in enumerate(waypoints_data):
             lat, lon, alt = wp_item, wp_item[1], wp_item[2]
@@ -462,16 +460,16 @@ class MavlinkController:
         print(f"MAVLink: Uploading {wp_loader.count()} waypoints...")
         
         try:
-            self.master.mav.mission_clear_all_send(self.master.target_system, self.master.target_component) # [26]
+            self.master.mav.mission_clear_all_send(self.master.target_system, self.master.target_component) 
             ack = self.master.recv_match(type='MISSION_ACK', blocking=True, timeout=5)
             if not ack or ack.type!= mavutil.mavlink.MAV_MISSION_ACCEPTED:
                 print(f"MAVLink: Failed to clear mission or no ACK. ACK: {ack}")
                 # return False # Continue to try upload anyway for some systems
 
-            self.master.mav.mission_count_send(self.master.target_system, self.master.target_component, wp_loader.count()) # [26]
+            self.master.mav.mission_count_send(self.master.target_system, self.master.target_component, wp_loader.count()) 
 
             for i in range(wp_loader.count()):
-                msg = self.master.recv_match(type='MISSION_REQUEST_INT', blocking=True, timeout=5) # [26]
+                msg = self.master.recv_match(type='MISSION_REQUEST_INT', blocking=True, timeout=5) 
                 if not msg:
                     print("MAVLink: No MISSION_REQUEST received, upload failed.")
                     return False
@@ -494,12 +492,12 @@ class MavlinkController:
 
     def set_mode(self, mode_name):
         """Sets the vehicle mode."""
-        # Based on Section 5.4 of the report
+        
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot set mode.")
             return False
         
-        if mode_name not in self.master.mode_mapping(): # [16]
+        if mode_name not in self.master.mode_mapping(): 
             print(f"MAVLink: Unknown mode: {mode_name}")
             print(f"MAVLink: Available modes: {list(self.master.mode_mapping().keys())}")
             return False
@@ -630,7 +628,7 @@ def process_commander_intent(nlu_result, mav_controller):
                 confirmation_message += f"Search for: {target_desc}.\n"
             confirmation_message += "Is this correct? (yes/no): "
             
-            # Confirmation Loop [28, 29, 30, 31, 32, 26, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46]
+            # Confirmation Loop 
             user_confirmation = input(confirmation_message).strip().lower()
 
             if user_confirmation == "yes":
