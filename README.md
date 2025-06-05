@@ -48,7 +48,7 @@ LIFEGUARD will:
 
 ## Major Components
 
-- **`commander_intent_system.py`:** Main application file integrating all subsystems—audio processing, STT, NLU, and MAVLink communication.
+- **`lifeguard.py`:** Main application file integrating all subsystems—audio processing, STT, NLU, and MAVLink communication.
 - **Audio Processing:** Uses `noisereduce` and `scipy.signal` for noise reduction and filtering.
 - **Speech-to-Text:** Utilizes Vosk models for offline speech recognition.
 - **NLU:** Implements spaCy pipelines with custom entity recognition for GPS and search/rescue-specific attributes.
@@ -73,8 +73,8 @@ LIFEGUARD will:
 
 1. **(Optional but Recommended) Create a Virtual Environment**
    ```bash
-   python3 -m venv command_intent
-   source command_intent/bin/activate  # On Windows: command_intent\Scripts\activate
+   python3 -m venv lifeguard
+   source lifeguard/bin/activate  # On Windows: lifeguard\Scripts\activate
    ```
    
 1. **Clone the Repository**
@@ -100,11 +100,11 @@ LIFEGUARD will:
 ## Usage
 
 1. **Connect your MAVLink-compatible vehicle or start a simulator** (e.g., ArduPilot SITL).  
-   Adjust the MAVLink connection string in `commander_intent_system.py` as needed for your hardware or simulator.
+   Adjust the MAVLink connection string in `lifeguard.py` as needed for your hardware or simulator.
 
 2. **Run the Application**
    ```bash
-   python commander_intent_system.py
+   python lifeguard.py
    ```
 
 3. **Speak your command into the microphone.**
@@ -126,7 +126,7 @@ LIFEGUARD will:
 
 ## Customization
 
-- Entity patterns and NLU rules can be extended for additional command types or domain-specific needs (see `commander_intent_system.py`).
+- Entity patterns and NLU rules can be extended for additional command types or domain-specific needs (see `lifeguard.py`).
 - MAVLink connection strings and parameters can be adjusted for different vehicle types and communication setups.
 
 ---
