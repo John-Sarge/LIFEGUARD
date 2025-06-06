@@ -12,7 +12,7 @@ echo "Upgrading pip..."
 pip install --upgrade pip
 
 echo "Installing Python dependencies..."
-pip install pyaudio numpy scipy noisereduce vosk spacy pynput pyttsx3 statemachine pymavlink lat_lon_parser
+pip install "numpy<2.0" "scipy<1.14" "spacy==3.7.5" pyaudio noisereduce vosk pynput pyttsx3 statemachine pymavlink lat_lon_parser
 
 echo "Downloading spaCy English model..."
 python -m spacy download en_core_web_sm
