@@ -26,7 +26,7 @@ from lat_lon_parser import parse as parse_lat_lon_external
 # MAVLink Communication
 from pymavlink import mavutil, mavwp
 
-# New Imports for PTT, TTS, State Machine
+# PTT, TTS, State Machine
 from pynput import keyboard
 import pyttsx3
 from statemachine import StateMachine, State
@@ -173,7 +173,7 @@ class LatLonEntityRecognizer:
                 if len(parts) == 2:
                     try:
                         lat_str = parts.strip()
-                        lon_str = parts.[1]strip()
+                        lon_str = parts[1].strip()
                         if not re.search(r'', lat_str) and not re.search(r'[+-]', lat_str):
                             pass
                         if not re.search(r'[EeWw]', lon_str) and not re.search(r'[+-]', lon_str):
@@ -188,7 +188,7 @@ class LatLonEntityRecognizer:
                     if span is not None:
                         span._.set("parsed_gps_coords", {"latitude": lat_val, "longitude": lon_val})
                         is_overlapping = False
-                        temp_new_entities =
+                        temp_new_entities = []
                         for ent in new_entities:
                             if not (span.end_char <= ent.start_char or span.start_char >= ent.end_char):
                                 if ent.label_!= self.gps_label:
@@ -222,13 +222,11 @@ class NaturalLanguageUnderstanding:
 
         if "sar_entity_ruler" not in self.nlp.pipe_names:
             ruler = self.nlp.add_pipe("entity_ruler", name="sar_entity_ruler", before="lat_lon_entity_recognizer" if "lat_lon_entity_recognizer" in self.nlp.pipe_names else ("ner" if self.nlp.has_pipe("ner") else None))
-            sar_patterns =},
-                {"label": "TARGET_ATTRIBUTE_STATUS", "pattern":},
-                {"label": "TARGET_ATTRIBUTE_DESCRIPTION", "pattern":},
-                {"label": "LOCATION_LANDMARK_ABSOLUTE", "pattern":},
-                {"label": "LOCATION_LANDMARK_ABSOLUTE", "pattern":},
-                {"label": "ACTION_VERB", "pattern": [{"LEMMA": {"IN": ["search", "look", "find", "investigate", "proceed", "go", "scan", "locate"]}}]},
-                {"label": "SPATIAL_RELATION", "pattern":}
+            sar_patterns = [
+                # Example patterns (add your own as needed)
+                # {"label": "TARGET_OBJECT", "pattern": [{"LOWER": "person"}]},
+                # {"label": "TARGET_ATTRIBUTE_COLOR", "pattern": [{"LOWER": "red"}]},
+                {"label": "ACTION_VERB", "pattern": [{"LEMMA": {"IN": ["search", "look", "find", "investigate", "proceed", "go", "scan", "locate"]}}]}
             ]
             ruler.add_patterns(sar_patterns)
             # print("NLU (spaCy): SAR EntityRuler added to pipeline.")
@@ -239,7 +237,7 @@ class NaturalLanguageUnderstanding:
         intent = "UNKNOWN_INTENT"
         entities_payload = {} # Changed name to avoid conflict with spaCy's entities
 
-        extracted_spacy_ents =
+        extracted_spacy_ents = []
         for ent in doc.ents:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
             if ent.label_ == "LOCATION_GPS_COMPLEX" and Span.has_extension("parsed_gps_coords") and ent._.get("parsed_gps_coords"):
@@ -273,7 +271,7 @@ class NaturalLanguageUnderstanding:
             if spatial_relations:
                  entities_payload["landmark_absolute"] = f"{' '.join(spatial_relations)} {entities_payload['landmark_absolute']}"
 
-        target_details_parts =
+        target_details_parts = []
         if target_objects: target_details_parts.extend(target_objects)
         if target_colors: target_details_parts.extend(target_colors)
         if target_statuses: target_details_parts.extend(target_statuses)
@@ -621,7 +619,7 @@ class LifeguardApp:
         self.keyboard_listener = None
         self.sm = None
 
-        self.audio_frames =
+        self.audio_frames = []
         self.is_space_currently_pressed = False # Tracks physical key state
         self.current_audio_stream = None
 
@@ -700,7 +698,7 @@ class LifeguardApp:
     def start_audio_recording(self):
         if not self.running_flag: return
         print("Audio: Starting recording stream...")
-        self.audio_frames =
+        self.audio_frames = []
         try:
             self.current_audio_stream = self.pyaudio_instance.open(
                 format=AUDIO_FORMAT,
@@ -809,7 +807,7 @@ class LifeguardApp:
         if "latitude" in entities and "longitude" in entities:
             parsed_gps_coords = {"latitude": entities["latitude"], "longitude": entities["longitude"]}
 
-        if intent in and parsed_gps_coords:
+        if intent in ("COMBINED_SEARCH_AND_TARGET", "REQUEST_SEARCH_AT_LOCATION") and parsed_gps_coords:
             lat = parsed_gps_coords.get("latitude")
             lon = parsed_gps_coords.get("longitude")
             alt = DEFAULT_WAYPOINT_ALTITUDE # Use default altitude

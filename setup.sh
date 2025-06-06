@@ -1,30 +1,30 @@
 #!/bin/bash
+
+# setup.sh - Install dependencies for lifeguard.py
+
 set -e
 
-# Install system dependencies for PyAudio (Linux example)
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    sudo apt-get update
-    sudo apt-get install -y portaudio19-dev python3-pyaudio
-fi
+#echo "Creating Python virtual environment..."
+#python -m venv venv
+#source venv/bin/activate
 
-# Create and activate virtual environment if you want
-# python3 -m venv venv
-# source venv/bin/activate
+echo "Upgrading pip..."
+pip install --upgrade pip
 
-# Install Python dependencies
-pip install -r requirements.txt
+echo "Installing Python dependencies..."
+pip install pyaudio numpy scipy noisereduce vosk spacy pynput pyttsx3 statemachine pymavlink lat_lon_parser
 
-# Download spaCy model
+echo "Downloading spaCy English model..."
 python -m spacy download en_core_web_sm
 
-# Download Vosk model
-VOSK_DIR="vosk_models"
-VOSK_MODEL="vosk-model-small-en-us-0.15"
-mkdir -p $VOSK_DIR
-if [ ! -d "$VOSK_DIR/$VOSK_MODEL" ]; then
-    wget https://alphacephei.com/vosk/models/$VOSK_MODEL.zip -O $VOSK_DIR/$VOSK_MODEL.zip
-    unzip $VOSK_DIR/$VOSK_MODEL.zip -d $VOSK_DIR
-    rm $VOSK_DIR/$VOSK_MODEL.zip
+echo "Downloading Vosk model (small English)..."
+mkdir -p vosk_models
+cd vosk_models
+if [ ! -d "vosk-model-small-en-us-0.15" ]; then
+    wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+    unzip vosk-model-small-en-us-0.15.zip
+    rm vosk-model-small-en-us-0.15.zip
 fi
+cd ..
 
 echo "Setup complete."
