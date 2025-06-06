@@ -16,17 +16,19 @@ LIFEGUARD is a Python-based system designed to interpret and process spoken natu
 - **MAVLink Integration:** Translates high-level intent into actionable commands for MAVLink-compatible vehicles (e.g., drones), supporting waypoint navigation, mission uploads, mode changes, arming/disarming, and more.
 - **Audio Preprocessing:** Enhances command recognition with noise reduction and band-pass filtering for reliable operation in noisy environments.
 - **Interactive Confirmation:** Prompts for confirmation before sending critical commands to autonomous units, ensuring accuracy and safety.
+- **Push-to-Talk (PTT):** Uses the spacebar as a push-to-talk trigger for capturing commands, with ESC for clean shutdown.
+- **Cross-Platform:** Works on both Windows and Linux (see notes below).
 
 ---
 
 ## How It Works
 
-1. **Microphone Input:** The system continuously listens for spoken commands from the operator.
+1. **Push-to-Talk:** The system waits for the operator to press and hold the spacebar to begin recording a command. Releasing the spacebar stops recording.
 2. **Audio Preprocessing:** Incoming audio is denoised and filtered to improve recognition accuracy.
 3. **Speech Recognition:** The processed audio is transcribed to text using the Vosk STT engine.
 4. **Intent Extraction:** The text is analyzed to identify the Commander’s intent and extract actionable entities (such as GPS coordinates, targets, and locations) using spaCy with custom rules and entity recognition.
 5. **Command Translation:** If a valid intent is detected (e.g., "Search at latitude 41.37 longitude -72.09 for a person in a life ring"), the system prepares corresponding MAVLink commands to instruct the autonomous unit.
-6. **User Confirmation:** Before sending commands to the vehicle, the system asks the operator to confirm the interpreted intent.
+6. **User Confirmation:** Before sending commands to the vehicle, the system asks the operator to confirm the interpreted intent by pressing space and saying "yes" or "no".
 7. **Action Execution:** Upon confirmation, the system sends the appropriate commands to the autonomous unit over MAVLink.
 
 ---
@@ -53,6 +55,7 @@ LIFEGUARD will:
 - **Speech-to-Text:** Utilizes Vosk models for offline speech recognition.
 - **NLU:** Implements spaCy pipelines with custom entity recognition for GPS and search/rescue-specific attributes.
 - **MAVLink Controller:** Employs `pymavlink` for sending navigation and mission commands to compatible vehicles.
+- **Push-to-Talk Handler:** Uses `pynput` to listen for spacebar (PTT) and ESC (shutdown) events, with robust cross-platform handling.
 
 ---
 
@@ -67,14 +70,14 @@ LIFEGUARD will:
 - [noisereduce](https://github.com/timsainb/noisereduce)
 - [pymavlink](https://github.com/ArduPilot/pymavlink)
 - [lat_lon_parser](https://pypi.org/project/lat-lon-parser/)
-- numpy, scipy
+- numpy, scipy, pynput, pyttsx3, statemachine
 
 ### Installation Steps
 
 1. **(Optional but Recommended) Create a Virtual Environment**
    ```bash
-   python3 -m venv lifeguard
-   source lifeguard/bin/activate  # On Windows: lifeguard\Scripts\activate
+   python3 -m venv lifeguard_bot
+   source lifeguard_bot/bin/activate  # On Windows: lifeguard_bot\Scripts\activate
    ```
    
 1. **Clone the Repository**
