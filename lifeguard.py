@@ -5,6 +5,7 @@ import json
 import re
 import time
 import asyncio # Required for some Pymavlink operations if they become async in future versions
+import threading
 
 # Audio Processing
 import pyaudio
@@ -520,10 +521,10 @@ class LifeguardAppSM(StateMachine):
 
 
     def __init__(self, model_ref):
-        self.model = model_ref # Reference to the LifeguardApp instance
+        self.app = model_ref  # Renamed from self.model
         self.captured_command_audio_data = None
         self.captured_yes_no_audio_data = None
-        self._confirmation_needed_flag_internal = False # For SM conditions
+        self._confirmation_needed_flag_internal = False
         super().__init__()
 
     # Condition for event_command_recognized transition
@@ -533,77 +534,72 @@ class LifeguardAppSM(StateMachine):
     # --- Actions ---
     def on_enter_listening_command(self, event_data):
         print("SM: State -> LISTENING_COMMAND")
-        self.model.speak("Listening for command...") # Brief feedback
-        self.model.start_audio_recording()
+        self.app.speak("Listening for command...")  # Changed from self.model
+        self.app.start_audio_recording()
 
     def on_exit_listening_command(self, event_data):
         print("SM: Exiting LISTENING_COMMAND")
-        self.captured_command_audio_data = self.model.stop_audio_recording()
+        self.captured_command_audio_data = self.app.stop_audio_recording()
 
     def on_enter_processing_command(self, event_data):
         print("SM: State -> PROCESSING_COMMAND")
-        command_text, needs_conf, is_stop_command = self.model.process_command_stt(self.captured_command_audio_data)
+        command_text, needs_conf, is_stop_command = self.app.process_command_stt(self.captured_command_audio_data)
         if is_stop_command:
-            self.model.initiate_shutdown("Stop command recognized.")
-            self.send("event_shutdown_requested") # Ensure SM goes to idle before shutdown
+            self.app.initiate_shutdown("Stop command recognized.")
+            self.send("event_shutdown_requested")
             return
 
         if command_text:
             self._confirmation_needed_flag_internal = needs_conf
             self.send("event_command_recognized")
         else:
-            self.model.speak("Sorry, I could not understand the command. Please try again.")
+            self.app.speak("Sorry, I could not understand the command. Please try again.")
             self.send("event_stt_failed_command")
 
     def on_enter_speaking_confirmation(self, event_data):
         print("SM: State -> SPEAKING_CONFIRMATION")
-        prompt = f"Did you say: {self.model.command_to_execute_display_text}? Please press space and say yes or no."
-        self.model.speak(prompt)
+        prompt = f"Did you say: {self.app.command_to_execute_display_text}? Please press space and say yes or no."
+        self.app.speak(prompt)
         self.send("event_confirmation_spoken")
 
     def on_enter_awaiting_yes_no(self, event_data):
         print("SM: State -> AWAITING_YES_NO")
-        # Optionally start a timeout timer here
 
     def on_enter_listening_yes_no(self, event_data):
         print("SM: State -> LISTENING_YES_NO")
-        self.model.speak("Listening for yes or no...")
-        self.model.start_audio_recording()
+        self.app.speak("Listening for yes or no...")
+        self.app.start_audio_recording()
 
     def on_exit_listening_yes_no(self, event_data):
         print("SM: Exiting LISTENING_YES_NO")
-        self.captured_yes_no_audio_data = self.model.stop_audio_recording()
+        self.captured_yes_no_audio_data = self.app.stop_audio_recording()
 
     def on_enter_processing_yes_no(self, event_data):
         print("SM: State -> PROCESSING_YES_NO")
-        response = self.model.process_yes_no_stt(self.captured_yes_no_audio_data)
+        response = self.app.process_yes_no_stt(self.captured_yes_no_audio_data)
         if response == "yes":
             self.send("event_yes_confirmed")
         elif response == "no":
-            self.model.speak("Okay, command cancelled.")
+            self.app.speak("Okay, command cancelled.")
             self.send("event_no_confirmed")
         else:
-            self.model.speak("Sorry, I didn't catch that. Please try saying yes or no again.")
+            self.app.speak("Sorry, I didn't catch that. Please try saying yes or no again.")
             self.send("event_stt_failed_yes_no")
 
     def on_enter_executing_action(self, event_data):
         print("SM: State -> EXECUTING_ACTION")
-        self.model.execute_lifeguard_command()
-        # execute_lifeguard_command should call self.send("event_action_completed")
-        # or speak and then the SM transitions. For now, let's assume it's synchronous.
-        # self.model.speak("Action completed.") # Moved to execute_lifeguard_command
+        self.app.execute_lifeguard_command()
         self.send("event_action_completed")
-
 
     def on_enter_idle(self, event_data):
         source_id = event_data.source.id if event_data.source else "INITIAL"
         event_name = event_data.event if event_data.event else "INIT"
         print(f"SM: State -> IDLE (from {source_id} via {event_name})")
-        self.model.command_to_execute_display_text = None
-        self.model.original_nlu_result_for_execution = None
+        self.app.command_to_execute_display_text = None
+        self.app.original_nlu_result_for_execution = None
         self._confirmation_needed_flag_internal = False
-        if self.model.running_flag: # Don't prompt if shutting down
-             print("\nSystem ready. Press and hold SPACE to speak a command, or ESC to exit.")
+        if self.app.running_flag:
+            print("\nSystem ready. Press and hold SPACE to speak a command, or ESC to exit.")
 
 
 # --- MAIN APPLICATION CLASS ---
@@ -665,10 +661,15 @@ class LifeguardApp:
             # Non-fatal, but speak() will not work
 
     def _setup_keyboard_listener(self):
-        self.keyboard_listener = keyboard.Listener(on_press=self._on_ptt_press, on_release=self._on_ptt_release)
-        self.keyboard_listener.start()
+        self.keyboard_listener = keyboard.Listener(
+            on_press=self._on_ptt_press,
+            on_release=self._on_ptt_release
+        )
+        # Do NOT set daemon or call start
+        self.keyboard_listener.run()  # This blocks and processes events in the main thread
 
     def _on_ptt_press(self, key):
+        #print(f"Key pressed: {key}")
         if key == keyboard.Key.space:
             if not self.is_space_currently_pressed: # First press
                 self.is_space_currently_pressed = True
@@ -684,6 +685,7 @@ class LifeguardApp:
             return False # Stop listener
 
     def _on_ptt_release(self, key):
+        #print(f"Key released: {key}")
         if key == keyboard.Key.space:
             if self.is_space_currently_pressed: # Was pressed
                 self.is_space_currently_pressed = False
@@ -846,45 +848,47 @@ class LifeguardApp:
 
 
     def run(self):
-        if not self.running_flag: # Initialization failed
+        if not self.running_flag:
             print("Application cannot start due to initialization errors.")
             self.cleanup()
             return
 
-        self._setup_keyboard_listener()
+        def main_loop():
+            while self.running_flag:
+                #print(f"Loop: state={self.sm.current_state}, space={self.is_space_currently_pressed}")
+                if self.is_space_currently_pressed and \
+                   (self.sm.current_state == self.sm.listening_command or \
+                    self.sm.current_state == self.sm.listening_yes_no) and \
+                   self.current_audio_stream and not self.current_audio_stream.is_stopped():
+                    try:
+                        data = self.current_audio_stream.read(AUDIO_READ_CHUNK, exception_on_overflow=False)
+                        self.audio_frames.append(data)
+                    except IOError as e:
+                        print(f"Audio read error: {e}")
+                        self.speak("Microphone error during recording.")
+                        if self.is_space_currently_pressed:
+                            self.is_space_currently_pressed = False
+                            if self.sm.current_state == self.sm.listening_command:
+                                self.sm.event_ptt_stop_command()
+                            elif self.sm.current_state == self.sm.listening_yes_no:
+                                self.sm.event_ptt_stop_yes_no()
+                time.sleep(0.01)
+            print("Exiting main application loop.")
+            self.cleanup()
+
+        # Start main loop in a background thread
+        t = threading.Thread(target=main_loop, daemon=True)
+        t.start()
+
         self.speak("System initialized.")
-        # The initial print from on_enter_idle will provide PTT instructions.
-        # Ensure SM starts in idle to trigger that.
-        if self.sm.current_state!= self.sm.idle: # Should be idle by default
+        if self.sm.current_state != self.sm.idle:
             try:
-                self.sm.send("event_shutdown_requested") # Force to idle if not
+                self.sm.send("event_shutdown_requested")
             except Exception as e:
                 print(f"Error forcing SM to idle: {e}")
 
-
-        while self.running_flag:
-            if self.is_space_currently_pressed and \
-               (self.sm.current_state == self.sm.listening_command or \
-                self.sm.current_state == self.sm.listening_yes_no) and \
-               self.current_audio_stream and not self.current_audio_stream.is_stopped():
-                try:
-                    data = self.current_audio_stream.read(AUDIO_READ_CHUNK, exception_on_overflow=False)
-                    self.audio_frames.append(data)
-                except IOError as e:
-                    print(f"Audio read error: {e}")
-                    self.speak("Microphone error during recording.")
-                    # Attempt to gracefully stop current PTT action
-                    if self.is_space_currently_pressed: # If key still seems pressed
-                        self.is_space_currently_pressed = False # Force release logic
-                        if self.sm.current_state == self.sm.listening_command:
-                            self.sm.event_ptt_stop_command()
-                        elif self.sm.current_state == self.sm.listening_yes_no:
-                            self.sm.event_ptt_stop_yes_no()
-            time.sleep(0.01) # Keep main thread responsive, prevent busy-waiting
-
-        print("Exiting main application loop.")
-        self.cleanup()
-
+        # Run the keyboard listener in the main thread (blocking)
+        self._setup_keyboard_listener()
 
     def cleanup(self):
         print("Cleaning up resources...")
