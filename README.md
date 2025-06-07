@@ -1,3 +1,5 @@
+![Lifeguard](https://github.com/user-attachments/assets/144d6ab6-ae71-4783-b9d1-0b1ada70befc)
+
 # LIFEGUARD
 **Lightweight Intent-Focused Engine for Guidance in Unmanned Autonomous Rescue Deployments**
 
