@@ -6,3 +6,5 @@ pymavlink
 lat-lon-parser
 numpy
 scipy
+statemachine
+word2number
