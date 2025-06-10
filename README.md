@@ -7,57 +7,59 @@
 
 ## Overview
 
-LIFEGUARD is a Python-based system designed to interpret and process spoken natural language commands, allowing a human operator (Commander) to pass intent and instructions directly to autonomous units such as drones or robots. Its primary goal is to provide a robust, reliable, and intuitive bridge between human intent and autonomous action, especially for field and rescue operations.
+LIFEGUARD is a Python-based system that interprets spoken natural language commands, allowing a human operator (Commander) to pass intent and instructions directly to autonomous units (drones/robots). It bridges human intent and autonomous action for field and rescue operations, with robust multi-agent support and advanced command understanding.
 
 ---
 
 ## Key Features
 
 - **Speech-to-Text (STT):** Converts live spoken commands to text using Vosk.
-- **Natural Language Understanding (NLU):** Extracts intent and entities (like GPS coordinates, landmarks, and target descriptions) from the Commander’s speech using spaCy and custom entity recognizers.
-- **MAVLink Integration:** Translates high-level intent into actionable commands for MAVLink-compatible vehicles (e.g., drones), supporting waypoint navigation, mission uploads, mode changes, arming/disarming, and more.
-- **Audio Preprocessing:** Enhances command recognition with noise reduction and band-pass filtering for reliable operation in noisy environments.
-- **Interactive Confirmation:** Prompts for confirmation before sending critical commands to autonomous units, ensuring accuracy and safety.
-- **Push-to-Talk (PTT):** Uses the spacebar as a push-to-talk trigger for capturing commands, with ESC for clean shutdown.
-- **Cross-Platform:** Works on both Windows and Linux (see notes below).
+- **Natural Language Understanding (NLU):** Extracts intent and entities (GPS, landmarks, targets) using spaCy with custom entity recognizers and spoken number conversion.
+- **Multi-Agent MAVLink Integration:** Supports multiple MAVLink-compatible vehicles (drones/robots) with agent selection by voice command.
+- **Waypoint & Grid Search:** Translates intent into actionable commands, including waypoint navigation and automatic grid search pattern generation.
+- **Audio Preprocessing:** Noise reduction and band-pass filtering for reliable operation in noisy environments.
+- **Interactive Confirmation:** Prompts for confirmation before sending critical commands.
+- **Push-to-Talk (PTT):** Uses the spacebar as a push-to-talk trigger; ESC for clean shutdown.
+- **Robust State Machine:** Ensures reliable transitions and error handling.
+- **Cross-Platform:** Works on Windows and Linux.
 
 ---
 
 ## How It Works
 
-1. **Push-to-Talk:** The system waits for the operator to press and hold the spacebar to begin recording a command. Releasing the spacebar stops recording.
-2. **Audio Preprocessing:** Incoming audio is denoised and filtered to improve recognition accuracy.
-3. **Speech Recognition:** The processed audio is transcribed to text using the Vosk STT engine.
-4. **Intent Extraction:** The text is analyzed to identify the Commander’s intent and extract actionable entities (such as GPS coordinates, targets, and locations) using spaCy with custom rules and entity recognition.
-5. **Command Translation:** If a valid intent is detected (e.g., "Search at latitude 41.37 longitude -72.09 for a person in a life ring"), the system prepares corresponding MAVLink commands to instruct the autonomous unit.
-6. **User Confirmation:** Before sending commands to the vehicle, the system asks the operator to confirm the interpreted intent by pressing space and saying "yes" or "no".
-7. **Action Execution:** Upon confirmation, the system sends the appropriate commands to the autonomous unit over MAVLink.
+1. **Push-to-Talk:** Press and hold the spacebar to record a command. Release to stop.
+2. **Audio Preprocessing:** Denoising and filtering improve recognition.
+3. **Speech Recognition:** Vosk transcribes the processed audio.
+4. **Intent Extraction:** spaCy NLU extracts intent, entities, and spoken numbers (e.g., "forty one point three seven" → 41.37).
+5. **Agent Selection:** Say commands like "select drone two" to switch active agents.
+6. **Command Translation:** Valid intent (e.g., "Search a 100 meter grid at latitude 41.37 longitude -72.09") is mapped to MAVLink commands.
+7. **User Confirmation:** System asks for confirmation before sending commands.
+8. **Action Execution:** Upon confirmation, commands are sent to the selected autonomous unit.
 
 ---
 
-## Example Use Case
+## Example Use Cases
 
-A field operator says:
+- **Waypoint Search:**  
+  > "Search at latitude 41.37 longitude -72.09 for a person in a life ring."
+- **Grid Search:**  
+  > "Search a 100 meter grid at latitude 41.37 longitude -72.09."
+- **Agent Selection:**  
+  > "Select drone two."
 
-> "Search at latitude 41.37 longitude -72.09 for a person in a life ring."
-
-LIFEGUARD will:
-
-- Recognize and transcribe the command,
-- Extract the GPS coordinates and target description,
-- Prompt the operator for confirmation,
-- Send the search waypoint to the drone once confirmed.
+LIFEGUARD will recognize, transcribe, extract details, prompt for confirmation, and send the appropriate mission to the selected drone.
 
 ---
 
 ## Major Components
 
-- **`lifeguard.py`:** Main application file integrating all subsystems—audio processing, STT, NLU, and MAVLink communication.
+- **`lifeguard.py`:** Main application file integrating all subsystems.
 - **Audio Processing:** Uses `noisereduce` and `scipy.signal` for noise reduction and filtering.
-- **Speech-to-Text:** Utilizes Vosk models for offline speech recognition.
-- **NLU:** Implements spaCy pipelines with custom entity recognition for GPS and search/rescue-specific attributes.
-- **MAVLink Controller:** Employs `pymavlink` for sending navigation and mission commands to compatible vehicles.
-- **Push-to-Talk Handler:** Uses `pynput` to listen for spacebar (PTT) and ESC (shutdown) events, with robust cross-platform handling.
+- **Speech-to-Text:** Utilizes Vosk models for offline recognition.
+- **NLU:** spaCy pipelines with custom entity recognition for GPS, grid size, agent selection, and spoken number conversion.
+- **MAVLink Controller:** Employs `pymavlink` for sending navigation and mission commands to multiple agents.
+- **Push-to-Talk Handler:** Uses `pynput` for spacebar (PTT) and ESC (shutdown) events.
+- **State Machine:** Manages command, confirmation, and execution states for reliability.
 
 ---
 
@@ -72,22 +74,25 @@ LIFEGUARD will:
 - [noisereduce](https://github.com/timsainb/noisereduce)
 - [pymavlink](https://github.com/ArduPilot/pymavlink)
 - [lat_lon_parser](https://pypi.org/project/lat-lon-parser/)
-- numpy, scipy, pynput, pyttsx3, statemachine
+- numpy, scipy, pynput, pyttsx3, statemachine, word2number
 
 ### Installation Steps
 
-1. **(Optional but Recommended) Create a Virtual Environment**
+1. **(Optional) Create a Virtual Environment**
    ```bash
    python3 -m venv lifeguard_bot
-   source lifeguard_bot/bin/activate  # On Windows: lifeguard_bot\Scripts\activate
+   # On Linux/macOS:
+   source lifeguard_bot/bin/activate
+   # On Windows:
+   lifeguard_bot\Scripts\activate
    ```
-   
-1. **Clone the Repository**
+
+2. **Clone the Repository**
    ```bash
    git clone https://github.com/John-Sarge/LIFEGUARD.git
    cd LIFEGUARD
    ```
-   
+
 3. **Install Dependencies**
    ```bash
    chmod +x setup.sh
@@ -95,17 +100,19 @@ LIFEGUARD will:
    ```
 
 4. **(Linux Only) Additional Audio Dependencies**
-   - You may need to install system dependencies for PyAudio:
-     ```bash
-     sudo apt-get install portaudio19-dev python3-pyaudio
-     ```
+   ```bash
+   sudo apt-get install portaudio19-dev python3-pyaudio
+   ```
+
+5. **Download Vosk Model**
+   - Download the English model (e.g., `vosk-model-small-en-us-0.15`) and place it in `vosk_models/`.
 
 ---
 
 ## Usage
 
-1. **Connect your MAVLink-compatible vehicle or start a simulator** (e.g., ArduPilot SITL).  
-   Adjust the MAVLink connection string in `lifeguard.py` as needed for your hardware or simulator.
+1. **Connect your MAVLink-compatible vehicle(s) or start a simulator**  
+   Adjust the `AGENT_CONNECTION_CONFIGS` in `lifeguard.py` for your hardware or simulator.
 
 2. **Run the Application**
    ```bash
@@ -113,26 +120,42 @@ LIFEGUARD will:
    ```
 
 3. **Speak your command into the microphone.**
-   - Example: "Search at latitude 41.37 longitude -72.09 for a person in a life ring."
+   - Example: "Search a 100 meter grid at latitude 41.37 longitude -72.09."
    - The system will transcribe, understand, and prompt for confirmation.
 
 4. **Confirm the interpreted intent when prompted.**
-   - Respond 'yes' or 'no' when the system asks for confirmation before sending the command to the autonomous unit.
+   - Respond 'yes' or 'no' when asked before sending the command.
+
+5. **Switch agents by voice:**
+   - Example: "Select drone two."
 
 ---
 
 ## Safety and Robustness
 
-- The system prompts for confirmation before sending critical commands.
-- Designed for field reliability, with robust error handling and state checks.
-- Assumes the vehicle is already in the correct mode and armed unless additional safety automation is implemented.
+- Prompts for confirmation before sending critical commands.
+- Robust error handling and state checks.
+- Multi-agent support with safe switching.
+- Designed for field reliability.
 
 ---
 
 ## Customization
 
-- Entity patterns and NLU rules can be extended for additional command types or domain-specific needs (see `lifeguard.py`).
-- MAVLink connection strings and parameters can be adjusted for different vehicle types and communication setups.
+- Extend entity patterns and NLU rules in `lifeguard.py` for new command types.
+- Adjust `AGENT_CONNECTION_CONFIGS` for different vehicles.
+- Tune grid search parameters and default altitudes as needed.
+
+---
+
+## Troubleshooting
+
+- **Vosk model not found:**  
+  Ensure the model is downloaded and placed in the correct folder (`vosk_models/`).
+- **PyAudio errors:**  
+  Check microphone permissions and install system dependencies.
+- **MAVLink connection issues:**  
+  Verify connection strings and that your vehicle/simulator is running.
 
 ---
 
