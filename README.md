@@ -93,19 +93,19 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 
 ### Installation Steps
 
-1.  **(Recommended) Create and Activate a Virtual Environment
+1.  **(Recommended) Create and Activate a Virtual Environment**
 
     ```bash
     python3 -m venv lifeguard_bot
     ```
 
-    **On Linux/macOS:
+    On Linux/macOS:
 
     ```bash
     source lifeguard_bot/bin/activate
     ```
 
-    **On Windows:
+    On Windows:
 
     ```bash
     lifeguard_bot\Scripts\activate
