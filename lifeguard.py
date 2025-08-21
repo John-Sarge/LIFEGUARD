@@ -1,4 +1,7 @@
 # lifeguard.py
+# This script implements a voice-controlled ground station for MAVLink-compatible uncrewed vehicles.
+# It integrates Speech-to-Text (STT), Natural Language Understanding (NLU), and MAVLink communication
+# to allow users to issue commands like "search a grid at [location]" or "fly to [location]".
 
 import os
 import json
@@ -6,119 +9,126 @@ import re
 import time
 import asyncio # Required for some Pymavlink operations if they become async in future versions
 import threading
-import math # For grid calculations
+import math # For geographical calculations (e.g., grid generation)
 
-# Audio Processing
+# Audio Processing Libraries
 import pyaudio
 import numpy as np
 from scipy.signal import butter, lfilter
 import noisereduce as nr
 
-# Speech-to-Text (STT)
+# Speech-to-Text (STT) Library
 import vosk
 
-# Natural Language Understanding (NLU)
+# Natural Language Understanding (NLU) Libraries
 import spacy
 from spacy.tokens import Doc, Span
 from spacy.language import Language
 from spacy.matcher import Matcher, PhraseMatcher
 from spacy.pipeline import EntityRuler
-from lat_lon_parser import parse as parse_lat_lon_external
+from lat_lon_parser import parse as parse_lat_lon_external # External library for robust lat/lon parsing
 
-# MAVLink Communication
+# MAVLink Communication Libraries
 from pymavlink import mavutil, mavwp
 
-# PTT, TTS, State Machine
+# Push-To-Talk (PTT), Text-To-Speech (TTS), and State Machine Libraries
 from pynput import keyboard
 import pyttsx3
 from statemachine import StateMachine, State
 from statemachine.exceptions import TransitionNotAllowed
-from word2number import w2n
+from word2number import w2n # Converts spoken numbers (e.g., "forty two") to digits (42)
 import re
 
 # --- CONFIGURATION CONSTANTS ---
 
 # STT Configuration
 VOSK_MODEL_NAME = "vosk-model-small-en-us-0.15" # Name of the Vosk model folder
-VOSK_MODEL_PATH = os.path.join("vosk_models", VOSK_MODEL_NAME)
-AUDIO_SAMPLE_RATE = 16000
-AUDIO_CHANNELS = 1
-AUDIO_FORMAT = pyaudio.paInt16
-AUDIO_FRAMES_PER_BUFFER = 8192 # For PyAudio stream opening
-AUDIO_READ_CHUNK = 4096 # Amount of data to read from stream at a time
+VOSK_MODEL_PATH = os.path.join("vosk_models", VOSK_MODEL_NAME) # Full path to the Vosk model directory
+AUDIO_SAMPLE_RATE = 16000 # Sample rate for audio recording (Hz)
+AUDIO_CHANNELS = 1 # Number of audio channels (1 for mono)
+AUDIO_FORMAT = pyaudio.paInt16 # Audio format (16-bit integers)
+AUDIO_FRAMES_PER_BUFFER = 8192 # Number of frames per buffer for PyAudio stream opening
+AUDIO_READ_CHUNK = 4096 # Amount of audio data (frames) to read from the stream at a time
 
 # Audio Pre-processing Configuration
-NOISE_REDUCE_TIME_CONSTANT_S = 2.0 # For noisereduce
-NOISE_REDUCE_PROP_DECREASE = 0.9
-BANDPASS_LOWCUT_HZ = 300.0
-BANDPASS_HIGHCUT_HZ = 3400.0
-BANDPASS_ORDER = 5
+NOISE_REDUCE_TIME_CONSTANT_S = 2.0 # Time constant for the noise reduction algorithm (seconds)
+NOISE_REDUCE_PROP_DECREASE = 0.9 # Proportion by which noise is decreased
+BANDPASS_LOWCUT_HZ = 300.0 # Lower cutoff frequency for the band-pass filter (Hz)
+BANDPASS_HIGHCUT_HZ = 3400.0 # Upper cutoff frequency for the band-pass filter (Hz)
+BANDPASS_ORDER = 5 # Order of the Butterworth band-pass filter
 
 # NLU Configuration
-SPACY_MODEL_NAME = "en_core_web_sm"
-# Confidence threshold for NLU interpretation to trigger command execution
-NLU_CONFIDENCE_THRESHOLD = 0.7 # Example value
+SPACY_MODEL_NAME = "en_core_web_sm" # Name of the spaCy language model to load
+NLU_CONFIDENCE_THRESHOLD = 0.7 # Minimum confidence score for NLU interpretation to trigger a command
 
 # MAVLink Configuration
-# MAVLINK_CONNECTION_STRING = 'udpin:localhost:14550' # FOR SIMULATION/TESTING - Replaced by AGENT_CONNECTION_CONFIGS
-MAVLINK_BAUDRATE = 115200 # Only for serial connections
-MAVLINK_SOURCE_SYSTEM_ID = 255 # GCS typically uses 255
-DEFAULT_WAYPOINT_ALTITUDE = 30.0 # Meters
-DEFAULT_SWATH_WIDTH_M = 20.0 # Meters, for search grid
+MAVLINK_BAUDRATE = 115200 # Baudrate for serial MAVLink connections
+MAVLINK_SOURCE_SYSTEM_ID = 255 # MAVLink system ID for the Ground Control Station (GCS)
+DEFAULT_WAYPOINT_ALTITUDE = 30.0 # Default altitude for generated waypoints (meters)
+DEFAULT_SWATH_WIDTH_M = 20.0 # Default swath width for search grid patterns (meters)
 
 # Agent Configuration (for single or multi-agent setup)
-# For mavlink-router: each agent would be a different UDP endpoint provided by the router
-# e.g., "drone1": {'connection_string': 'udpin:localhost:14551',...}
-#       "drone2": {'connection_string': 'udpin:localhost:14552',...}
+# This dictionary defines the connection parameters for each uncrewed vehicle (agent).
+# For mavlink-router, each agent would typically be a different UDP endpoint.
 AGENT_CONNECTION_CONFIGS = {
-    "agent1": { # Default single agent
-        "connection_string": 'udpin:localhost:14550', # Replace with your actual connection
-        "source_system_id": MAVLINK_SOURCE_SYSTEM_ID,
-        "baudrate": MAVLINK_BAUDRATE # Relevant only for serial connections
+    "agent1": { # Default single agent configuration
+        "connection_string": 'tcp:10.24.5.232:5762', # MAVLink connection string (e.g., TCP, UDP, serial)
+        "source_system_id": MAVLINK_SOURCE_SYSTEM_ID, # Source system ID for this agent's connection
+        "baudrate": MAVLINK_BAUDRATE # Baudrate, relevant only for serial connections
     }
-    # Add more agents here if using mavlink-router or multiple direct connections
+    # Additional agents can be added here, e.g.:
     # "agent2": {
-    #     "connection_string": 'udpin:localhost:14560', # Example for a second agent
-    #     "source_system_id": MAVLINK_SOURCE_SYSTEM_ID,
-    #     "baudrate": MAVLINK_BAUDRATE
+    #    "connection_string": 'udpin:localhost:14560', # Example for a second agent
+    #    "source_system_id": MAVLINK_SOURCE_SYSTEM_ID,
+    #    "baudrate": MAVLINK_BAUDRATE
     # }
 }
-INITIAL_ACTIVE_AGENT_ID = "agent1" # The agent to command by default
+INITIAL_ACTIVE_AGENT_ID = "agent1" # The ID of the agent to command by default upon startup
 
-# Earth radius in meters for geo calculations
+# Earth radius in meters for geographical calculations (used in grid generation)
 EARTH_RADIUS_METERS = 6378137.0
 
 # --- AUDIO PRE-PROCESSING FUNCTIONS ---
 
 def apply_noise_reduction(audio_data_int16, sample_rate):
-    """Applies noise reduction to int16 audio data."""
-    audio_data_float = audio_data_int16.astype(np.float32) / 32767.0
+    """
+    Applies noise reduction to int16 audio data.
+    Converts audio to float for processing, then back to int16.
+    """
+    audio_data_float = audio_data_int16.astype(np.float32) / 32767.0 # Normalize to float range [-1.0, 1.0]
     reduced_audio_float = nr.reduce_noise(y=audio_data_float,
-                                          sr=sample_rate,
-                                          time_constant_s=NOISE_REDUCE_TIME_CONSTANT_S,
-                                          prop_decrease=NOISE_REDUCE_PROP_DECREASE,
-                                          n_fft=512)
-    reduced_audio_int16 = (reduced_audio_float * 32767.0).astype(np.int16)
+                                           sr=sample_rate,
+                                           time_constant_s=NOISE_REDUCE_TIME_CONSTANT_S,
+                                           prop_decrease=NOISE_REDUCE_PROP_DECREASE,
+                                           n_fft=512) # FFT window size for noise reduction
+    reduced_audio_int16 = (reduced_audio_float * 32767.0).astype(np.int16) # Convert back to int16
     return reduced_audio_int16
 
 def apply_bandpass_filter(audio_data, sample_rate):
-    """Applies a band-pass filter to the audio data."""
-    nyq = 0.5 * sample_rate
-    low = BANDPASS_LOWCUT_HZ / nyq
-    high = BANDPASS_HIGHCUT_HZ / nyq
-    b, a = butter(BANDPASS_ORDER, [low, high], btype='band')
-    filtered_audio = lfilter(b, a, audio_data)
-    return filtered_audio.astype(audio_data.dtype)
+    """
+    Applies a Butterworth band-pass filter to the audio data.
+    This helps to isolate the human voice frequency range.
+    """
+    nyq = 0.5 * sample_rate # Nyquist frequency
+    low = BANDPASS_LOWCUT_HZ / nyq # Normalized low cutoff frequency
+    high = BANDPASS_HIGHCUT_HZ / nyq # Normalized high cutoff frequency
+    b, a = butter(BANDPASS_ORDER, [low, high], btype='band') # Design the Butterworth filter
+    filtered_audio = lfilter(b, a, audio_data) # Apply the filter
+    return filtered_audio.astype(audio_data.dtype) # Ensure output type matches input
 
-# Place this near your imports, outside the class
 def spoken_numbers_to_digits(text):
-
-    # Fix common STT misrecognitions
+    """
+    Converts spoken number phrases (e.g., "forty two", "negative five point one")
+    within a text string into their numerical digit equivalents (e.g., "42", "-5.1").
+    Handles common STT misrecognitions like 'native' for 'negative'.
+    """
+    # Fix common STT misrecognitions for "negative"
     text = re.sub(r'\bnative\b', 'negative', text, flags=re.IGNORECASE)
-    # Replace 'oh' or 'o' with 'zero' when used as a number
+    # Replace 'oh' or 'o' with 'zero' when used as a number (e.g., "oh five" -> "05")
     text = re.sub(r'\boh\b', 'zero', text, flags=re.IGNORECASE)
     text = re.sub(r'\bo\b', 'zero', text, flags=re.IGNORECASE)
 
+    # Regex pattern to find potential spoken number phrases, including signs and decimals
     number_pattern = re.compile(
         r'\b(?P<sign>negative |minus )?(?P<number>(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|'
         r'eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|'
@@ -127,53 +137,64 @@ def spoken_numbers_to_digits(text):
     )
 
     def repl(match):
+        """Replacement function for the regex match."""
         phrase = match.group('number')
         sign = match.group('sign')
         try:
-            num = w2n.word_to_num(phrase.strip())
+            num = w2n.word_to_num(phrase.strip()) # Convert words to number
             if sign:
-                num = -abs(num)
-            return f" {num} "
+                num = -abs(num) # Apply negative sign if present
+            return f" {num} " # Return the number as a string, surrounded by spaces
         except Exception:
-            return match.group(0)
+            return match.group(0) # If conversion fails, return the original matched text
 
-    return number_pattern.sub(repl, text)
+    return number_pattern.sub(repl, text) # Apply the replacement across the text
 
 # --- SPEECH-TO-TEXT (STT) MODULE ---
 
 class SpeechToText:
+    """
+    Handles speech-to-text conversion using the Vosk library.
+    Applies audio pre-processing before recognition.
+    """
     def __init__(self, model_path, sample_rate):
         self.sample_rate = sample_rate
         if not os.path.exists(model_path):
             print(f"ERROR: Vosk model not found at {model_path}. Please download and place it correctly.")
             raise FileNotFoundError(f"Vosk model not found at {model_path}")
 
-        self.model = vosk.Model(model_path)
-        self.recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
-        self.recognizer.SetWords(True) # Optional: for word-level timestamps
+        self.model = vosk.Model(model_path) # Load the Vosk speech recognition model
+        self.recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate) # Initialize the Kaldi recognizer
+        self.recognizer.SetWords(True) # Enable word-level timestamps (optional, but can be useful)
 
     def recognize_buffer(self, raw_audio_buffer_bytes):
-        """Processes a complete audio buffer and returns final transcription."""
+        """
+        Processes a complete raw audio buffer (bytes) and returns the final transcription.
+        Applies noise reduction and band-pass filtering before passing to Vosk.
+        """
         if not raw_audio_buffer_bytes:
-            self.recognizer.Reset()
+            self.recognizer.Reset() # Reset recognizer state if no audio
             return ""
 
+        # Convert raw bytes to numpy array for audio processing
         audio_data_np = np.frombuffer(raw_audio_buffer_bytes, dtype=np.int16)
+        # Apply pre-processing steps
         denoised_audio_np = apply_noise_reduction(audio_data_np, self.sample_rate)
         filtered_audio_np = apply_bandpass_filter(denoised_audio_np, self.sample_rate)
-        processed_audio_bytes = filtered_audio_np.tobytes()
+        processed_audio_bytes = filtered_audio_np.tobytes() # Convert back to bytes for Vosk
 
         text_result = ""
+        # Process the audio waveform. AcceptWaveform processes a chunk, FinalResult gets the full result.
         if self.recognizer.AcceptWaveform(processed_audio_bytes):
-            result_json = self.recognizer.Result()
+            result_json = self.recognizer.Result() # Get result if a phrase is recognized
         else:
-            result_json = self.recognizer.FinalResult()
+            result_json = self.recognizer.FinalResult() # Get final result if no more audio is expected
 
-        self.recognizer.Reset()
+        self.recognizer.Reset() # Reset the recognizer for the next utterance
 
         try:
             result_dict = json.loads(result_json)
-            text_result = result_dict.get('text', '')
+            text_result = result_dict.get('text', '') # Extract the 'text' field from the JSON result
         except json.JSONDecodeError:
             print(f"STT (Vosk): Could not decode JSON result: {result_json}")
         except Exception as e:
@@ -181,42 +202,59 @@ class SpeechToText:
         return text_result
 
 # --- NATURAL LANGUAGE UNDERSTANDING (NLU) MODULE ---
+
 @Language.factory("lat_lon_entity_recognizer", default_config={"gps_label": "LOCATION_GPS_COMPLEX"})
 def create_lat_lon_entity_recognizer(nlp: Language, name: str, gps_label: str):
+    """
+    SpaCy factory function to create a custom pipeline component for recognizing
+    latitude and longitude entities.
+    """
     return LatLonEntityRecognizer(nlp, gps_label)
 
 class LatLonEntityRecognizer:
+    """
+    A spaCy custom pipeline component that identifies and extracts
+    latitude and longitude coordinates from text using regular expressions.
+    It adds a custom extension `parsed_gps_coords` to the spaCy Span object.
+    """
     def __init__(self, nlp: Language, gps_label: str):
         self.gps_label = gps_label
+        # Regex to capture various formats of latitude and longitude
         self.gps_regex = re.compile(
             r"""
             (?: # Non-capturing group for different formats
                 # Match: latitude 41.37, longitude -72.09
                 latitude\s*([+-]?\d{1,3}(?:\.\d+)?)\s*,\s*longitude\s*([+-]?\d{1,3}(?:\.\d+)?)
-                | # OR: lat/lon or decimal pair
-                (?:[Ll][Aa](?:itude)?\s*[:\s]*)? # Optional "lat" or "latitude"
+                | # OR: lat/lon or decimal pair (e.g., "41.37, -72.09" or "lat 41.37 lon -72.09")
+                (?:[Ll][Aa](?:itude)?\s*[:\s]*)? # Optional "lat" or "latitude" prefix
                 ([+-]?\d{1,3}(?:\.\d+)?\s*(?:°|d|degrees)?\s*(?:\d{1,2}(?:\.\d+)?\s*['m|minutes])?\s*(?:\d{1,2}(?:\.\d+)?\s*["s|seconds])?\s*?)\s*
-                (?:[,;\s]+\s*)? # Separator
-                (?:[Ll][Oo][Nn](?:gitude)?\s*[:\s]*)? # Optional "lon" or "longitude"
+                (?:[,;\s]+\s*)? # Separator (comma, semicolon, or space)
+                (?:[Ll][Oo][Nn](?:gitude)?\s*[:\s]*)? # Optional "lon" or "longitude" prefix
                 ([+-]?\d{1,3}(?:\.\d+)?\s*(?:°|d|degrees)?\s*(?:\d{1,2}(?:\.\d+)?\s*['m|minutes])?\s*(?:\d{1,2}(?:\.\d+)?\s*["s|seconds])?\s*[EeWw]?)
-                | # OR simple decimal pair
+                | # OR simple decimal pair (e.g., "41.37, -72.09")
                 ([+-]?\d{1,3}\.\d+)\s*,\s*([+-]?\d{1,3}\.\d+)
             )
             """,
-            re.VERBOSE
+            re.VERBOSE # Allows for multi-line regex with comments
         )
+        # Add a custom extension to spaCy Span objects to store parsed GPS coordinates
         if not Span.has_extension("parsed_gps_coords"):
             Span.set_extension("parsed_gps_coords", default=None)
 
     def __call__(self, doc: Doc) -> Doc:
+        """
+        Processes a spaCy Doc object to find and label GPS coordinates.
+        Iterates through regex matches, creates Span entities, and attaches parsed coordinates.
+        Handles potential overlaps with existing entities.
+        """
         print(f"[DEBUG] LatLonEntityRecognizer called on: '{doc.text}'")
-        new_entities = list(doc.ents)
+        new_entities = list(doc.ents) # Start with existing entities
         for match in self.gps_regex.finditer(doc.text):
             print(f"[DEBUG] GPS regex match: {match.group(0)}")
-            start_char, end_char = match.span()
+            start_char, end_char = match.span() # Character start and end of the match
             lat_val, lon_val = None, None
 
-            # Only create a GPS entity if BOTH latitude and longitude are present in the same match
+            # Extract latitude and longitude based on which regex group matched
             if match.group(1) and match.group(2):
                 lat_val = float(match.group(1))
                 lon_val = float(match.group(2))
@@ -225,27 +263,29 @@ class LatLonEntityRecognizer:
                     lat_val = float(match.group(3))
                     lon_val = float(match.group(4))
                 except Exception:
-                    continue
+                    continue # Skip if conversion fails
             elif match.group(5) and match.group(6):
                 try:
                     lat_val = float(match.group(5))
                     lon_val = float(match.group(6))
                 except Exception:
-                    continue
+                    continue # Skip if conversion fails
             else:
-                continue
+                continue # Skip if no valid lat/lon pair found in the match
 
             if lat_val is not None and lon_val is not None:
+                # Validate coordinates are within realistic ranges
                 if -90 <= lat_val <= 90 and -180 <= lon_val <= 180:
                     try:
+                        # Create a spaCy Span for the recognized entity
                         span = doc.char_span(start_char, end_char, label=self.gps_label, alignment_mode="expand")
                         if span is None:
-                            # Try contract mode
+                            # Try contract mode if expand fails
                             contract_span = doc.char_span(start_char, end_char, alignment_mode="contract")
                             if contract_span is not None:
                                 span = Span(doc, contract_span.start, contract_span.end, label=self.gps_label)
                             else:
-                                # Fallback: use the closest tokens covering the match
+                                # Fallback: find the closest tokens covering the match
                                 token_start = None
                                 token_end = None
                                 for i, token in enumerate(doc):
@@ -253,7 +293,6 @@ class LatLonEntityRecognizer:
                                         token_start = i
                                     if token.idx < end_char <= token.idx + len(token):
                                         token_end = i + 1
-                                # If still not found, use the nearest tokens
                                 if token_start is None:
                                     for i, token in enumerate(doc):
                                         if token.idx > start_char:
@@ -274,101 +313,150 @@ class LatLonEntityRecognizer:
                                     token_end = len(doc)
                                 span = Span(doc, token_start, token_end, label=self.gps_label)
                         if span is not None:
+                            # Attach the parsed coordinates to the custom extension
                             span._.set("parsed_gps_coords", {"latitude": lat_val, "longitude": lon_val})
-                            # Remove ALL overlapping entities (not just GPS) to avoid spaCy E1010 error
+                            # Remove ALL overlapping entities to avoid spaCy E1010 error (overlapping spans)
                             temp_new_entities = []
                             for ent in new_entities:
-                                # Remove any entity that overlaps in tokens with the new span
+                                # Keep entities that do not overlap with the new span
                                 if span.end <= ent.start or span.start >= ent.end:
                                     temp_new_entities.append(ent)
-                            temp_new_entities.append(span)
+                            temp_new_entities.append(span) # Add the new, valid GPS span
                             new_entities = temp_new_entities
                     except Exception as e:
                         print(f"[DEBUG] Exception in LatLonEntityRecognizer: {e}")
+        # Update the document's entities, ensuring they are sorted and unique
         doc.ents = tuple(sorted(list(set(new_entities)), key=lambda e: e.start_char))
         return doc
 
 class NaturalLanguageUnderstanding:
+    """
+    Manages the spaCy NLP pipeline for parsing user commands.
+    Identifies intents and extracts relevant entities (e.g., locations, target objects, agent IDs).
+    """
     def __init__(self, spacy_model_name):
         try:
-            self.nlp = spacy.load(spacy_model_name)
+            self.nlp = spacy.load(spacy_model_name) # Load the specified spaCy model
         except OSError:
             print(f"spaCy model '{spacy_model_name}' not found. Please download it: python -m spacy download {spacy_model_name}")
             raise
 
+        # Add the custom latitude/longitude entity recognizer to the pipeline
         if "lat_lon_entity_recognizer" not in self.nlp.pipe_names:
+            # Add it after the built-in 'ner' component if it exists, otherwise at the end
             self.nlp.add_pipe("lat_lon_entity_recognizer", after="ner" if self.nlp.has_pipe("ner") else None)
 
+        # Add a custom EntityRuler for domain-specific patterns (e.g., search and rescue terms)
         if "sar_entity_ruler" not in self.nlp.pipe_names:
             ruler = self.nlp.add_pipe("entity_ruler", name="sar_entity_ruler", before="lat_lon_entity_recognizer")
             sar_patterns = [
-                {"label": "TARGET_OBJECT", "pattern": [{"LOWER": "person"}]},
-                {"label": "TARGET_OBJECT", "pattern": [{"LOWER": "boat"}]},
-                {"label": "GRID_SIZE_METERS", "pattern": [{"LIKE_NUM": True}, {"LOWER": {"IN": ["meter", "meters", "m"]}}]},
+                {"label": "TARGET_OBJECT", "pattern": [{"LOWER": "person"}]}, # Pattern for "person" as a target
+                {"label": "TARGET_OBJECT", "pattern": [{"LOWER": "boat"}]}, # Pattern for "boat" as a target
+                # Flexible patterns for "grid size" (e.g., "100 meter grid", "grid 50m")
+                {"label": "GRID_SIZE_METERS", "pattern": [{"LIKE_NUM": True}, {"LOWER": {"IN": ["meter", "meters", "m"]}}, {"LOWER": "grid"}]},
                 {"label": "GRID_SIZE_METERS", "pattern": [{"LOWER": "grid"}, {"LIKE_NUM": True}, {"LOWER": {"IN": ["meter", "meters", "m"]}}]},
+                {"label": "GRID_SIZE_METERS", "pattern": [{"LIKE_NUM": True}, {"LOWER": {"IN": ["meter", "meters", "m"]}}]},
+                {"label": "GRID_SIZE_METERS", "pattern": [{"LOWER": "grid"}, {"LIKE_NUM": True}]},
+                {"label": "GRID_SIZE_METERS", "pattern": [{"LIKE_NUM": True}, {"LOWER": "meter"}, {"LOWER": "grid"}]},
+                {"label": "GRID_SIZE_METERS", "pattern": [{"LIKE_NUM": True}, {"LOWER": "meters"}, {"LOWER": "grid"}]},
+                {"label": "GRID_SIZE_METERS", "pattern": [{"LOWER": "grid"}, {"LIKE_NUM": True}, {"LOWER": "meter"}]},
+                {"label": "GRID_SIZE_METERS", "pattern": [{"LOWER": "grid"}, {"LIKE_NUM": True}, {"LOWER": "meters"}]},
+                # Patterns for identifying agent IDs (e.g., "drone 1", "agent two")
                 {"label": "AGENT_ID_NUM", "pattern": [{"LOWER": {"IN": ["drone", "agent"]}}, {"IS_DIGIT": True}]},
                 {"label": "AGENT_ID_TEXT", "pattern": [{"LOWER": {"IN": ["drone", "agent"]}}, {"IS_ALPHA": True}]},
+                # Action verbs for selecting agents
                 {"label": "ACTION_SELECT", "pattern": [{"LEMMA": {"IN": ["select", "target", "choose", "activate"]}}]},
-                {"label": "ACTION_VERB", "pattern": [{"LEMMA": "search"}]},  # <-- Add this line
+                # Action verb for search commands
+                {"label": "ACTION_VERB", "pattern": [{"LEMMA": "search"}]},
             ]
-            ruler.add_patterns(sar_patterns)
+            ruler.add_patterns(sar_patterns) # Add the defined patterns to the ruler
 
     def parse_command(self, text):
-        doc = self.nlp(text)
+        """
+        Parses a given text command using the spaCy NLP pipeline to determine intent
+        and extract relevant entities.
+        Returns a dictionary containing the recognized intent, confidence, and extracted entities.
+        """
+        doc = self.nlp(text) # Process the text with the spaCy pipeline
         intent = "UNKNOWN_INTENT"
         entities_payload = {}
-        confidence = 0.5
+        confidence = 0.5 # Default confidence
 
         extracted_spacy_ents = []
         for ent in doc.ents:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
+            # Handle custom entity data based on label
             if ent.label_ == "LOCATION_GPS_COMPLEX" and Span.has_extension("parsed_gps_coords") and ent._.get("parsed_gps_coords"):
                 entity_data["parsed_gps"] = ent._.parsed_gps_coords
             elif ent.label_ == "GRID_SIZE_METERS":
+                # Extract numeric part from grid size entity text
                 numeric_part = "".join(filter(str.isdigit, ent.text))
                 if numeric_part:
                     entity_data["value"] = int(numeric_part)
             elif ent.label_ == "AGENT_ID_NUM":
+                # Format numeric agent ID (e.g., "drone 1" -> "agent1")
                 numeric_part = "".join(filter(str.isdigit, ent.text))
                 entity_data["value"] = f"agent{numeric_part}"
             elif ent.label_ == "AGENT_ID_TEXT":
+                # Extract text part for agent ID (e.g., "drone alpha" -> "alpha")
                 name_part = ent.text.lower().replace("drone", "").replace("agent", "").strip()
                 entity_data["value"] = name_part
             extracted_spacy_ents.append(entity_data)
-        entities_payload["raw_spacy_entities"] = extracted_spacy_ents
+        entities_payload["raw_spacy_entities"] = extracted_spacy_ents # Store all extracted entities
 
         def get_entity_values(label, value_key="text"):
+            """Helper to get values for a specific entity label."""
             return [e[value_key] for e in extracted_spacy_ents if e["label"] == label and value_key in e]
 
         def get_parsed_gps():
+            """
+            Helper to retrieve the most likely parsed GPS coordinates.
+            Prefers the coordinate with latitude furthest from zero (more likely to be the primary one).
+            """
+            valid_gps = []
             for e in extracted_spacy_ents:
                 if e["label"] == "LOCATION_GPS_COMPLEX" and "parsed_gps" in e:
-                    return e["parsed_gps"]
+                    lat = e["parsed_gps"].get("latitude")
+                    lon = e["parsed_gps"].get("longitude")
+                    if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
+                        valid_gps.append(e["parsed_gps"])
+            if valid_gps:
+                return max(valid_gps, key=lambda g: abs(g["latitude"])) # Select the one with largest absolute latitude
             return None
 
+        # Extract specific entity types
         action_verbs = get_entity_values("ACTION_VERB")
         action_select_verbs = get_entity_values("ACTION_SELECT")
         target_objects = get_entity_values("TARGET_OBJECT")
         parsed_gps_coords = get_parsed_gps()
         grid_sizes = get_entity_values("GRID_SIZE_METERS", "value")
+        # Fallback: regex extraction for grid size if spaCy ruler didn't catch it
+        if not grid_sizes:
+            grid_size_match = re.search(r'(\d+)\s*(?:meter|meters|m)\s*grid', text, re.IGNORECASE)
+            if grid_size_match:
+                grid_sizes = [int(grid_size_match.group(1))]
+                print(f"[DEBUG] Regex fallback grid_sizes={grid_sizes}")
         agent_ids_num = get_entity_values("AGENT_ID_NUM", "value")
         agent_ids_text = get_entity_values("AGENT_ID_TEXT", "value")
+        print(f"[DEBUG] grid_sizes={grid_sizes}")
+        print(f"[DEBUG] parsed_gps_coords={parsed_gps_coords}")
 
-
+        # Populate entities payload
         if parsed_gps_coords:
             entities_payload.update(parsed_gps_coords)
 
         if grid_sizes:
-            entities_payload["grid_size_meters"] = grid_sizes[0] # Take first found
+            entities_payload["grid_size_meters"] = grid_sizes[0] # Take the first found grid size
 
         selected_agent_id = None
         if agent_ids_num: selected_agent_id = agent_ids_num[0]
         elif agent_ids_text: selected_agent_id = agent_ids_text[0]
 
+        # Determine intent based on extracted entities and keywords
         if selected_agent_id and action_select_verbs:
             intent = "SELECT_AGENT"
             entities_payload["selected_agent_id"] = selected_agent_id
-            confidence = 0.9
+            confidence = 0.9 # High confidence for clear agent selection
 
         target_details_parts = []
         if target_objects: target_details_parts.extend(target_objects)
@@ -376,83 +464,123 @@ class NaturalLanguageUnderstanding:
         if target_details_parts:
             entities_payload["target_description_full"] = " ".join(target_details_parts)
 
+        # Force grid search intent if command contains "grid" and grid size and GPS are present
+        if (
+            ("grid" in text.lower()) and
+            grid_sizes and
+            parsed_gps_coords
+        ):
+            intent = "REQUEST_GRID_SEARCH"
+            entities_payload["grid_size_meters"] = grid_sizes[0] # Ensure grid size is in payload
 
+        # Refine intent if still UNKNOWN_INTENT
         if intent == "UNKNOWN_INTENT":
             if action_verbs:
                 entities_payload["action_verb"] = action_verbs[0]
                 if parsed_gps_coords:
                     if "grid_size_meters" in entities_payload:
-                        intent = "REQUEST_GRID_SEARCH"
+                        intent = "REQUEST_GRID_SEARCH" # Overlap with forced grid search, but good for robustness
                     elif target_details_parts:
-                        intent = "COMBINED_SEARCH_AND_TARGET"
+                        intent = "COMBINED_SEARCH_AND_TARGET" # Search at location for a target
                     else:
-                        intent = "REQUEST_SEARCH_AT_LOCATION"
+                        intent = "REQUEST_SEARCH_AT_LOCATION" # Simple search at location
                 elif target_details_parts:
-                    intent = "PROVIDE_TARGET_DESCRIPTION"
+                    intent = "PROVIDE_TARGET_DESCRIPTION" # Only providing target info, no movement
                 else:
-                    intent = "GENERIC_COMMAND"
+                    intent = "GENERIC_COMMAND" # General command, no specific action yet
 
         # Boost confidence for well-formed commands
         if intent not in ("UNKNOWN_INTENT",):
             if parsed_gps_coords or target_details_parts or intent == "SELECT_AGENT":
-                confidence = max(confidence, 0.85)
+                confidence = max(confidence, 0.85) # Increase confidence for commands with key entities
             if intent == "REQUEST_GRID_SEARCH" and "grid_size_meters" in entities_payload and parsed_gps_coords:
-                confidence = 0.95
-
+                confidence = 0.95 # Very high confidence for complete grid search commands
 
         return {"text": text, "intent": intent, "confidence": confidence, "entities": entities_payload}
 
-
 # --- MAVLINK INTEGRATION MODULE ---
 class MavlinkController:
+    """
+    Manages MAVLink communication with a single uncrewed vehicle.
+    Provides methods for connecting, sending waypoints, uploading missions,
+    setting modes, arming/disarming, and sending status text.
+    """
     def __init__(self, connection_string, baudrate=None, source_system_id=255):
         self.connection_string = connection_string
         self.baudrate = baudrate
         self.source_system_id = source_system_id
-        self.master = None
-        self._connect()
+        self.master = None # MAVLink connection object
+        self._connect() # Attempt to establish connection upon initialization
 
     def _connect(self):
-        print(f"MAVLink: Attempting to connect to {self.connection_string}...")
+        """
+        Establishes a MAVLink connection to the specified endpoint.
+        Waits for a heartbeat to confirm a valid connection to a vehicle.
+        """
+        print(f"MAVLink: Attempting to connect to {self.connection_string} with source_system {self.source_system_id}...")
         try:
-            # For serial, baudrate is used. For UDP/TCP, it's often ignored by mavutil.
+            # Determine connection type (serial vs. UDP/TCP)
             if "com" in self.connection_string.lower() or "/dev/tty" in self.connection_string.lower():
-                 self.master = mavutil.mavlink_connection(self.connection_string, baud=self.baudrate, source_system=self.source_system_id)
-            else: # UDP/TCP
-                 self.master = mavutil.mavlink_connection(self.connection_string, source_system=self.source_system_id)
+                self.master = mavutil.mavlink_connection(self.connection_string, baud=self.baudrate, source_system=self.source_system_id)
+            else: # Assume UDP/TCP connection
+                self.master = mavutil.mavlink_connection(
+                    self.connection_string,
+                    source_system=self.source_system_id,
+                    dialect="ardupilotmega", # Specify dialect for ArduPilot vehicles
+                    autoreconnect=True, # Attempt to reconnect automatically if connection drops
+                    use_native=False, # Use Python-based MAVLink parsing
+                    force_connected=True, # Force connection even if heartbeat not immediately received (still waits for heartbeat later)
+                    mavlink2=True # Use MAVLink 2 protocol
+                )
+            print(f"MAVLink: mavlink_connection object created for {self.connection_string}.")
+            print(f"MAVLink: Waiting for heartbeat on {self.connection_string} (timeout 10s)...")
+            
+            # Wait for the first heartbeat message from the vehicle
+            self.master.wait_heartbeat(timeout=10) 
 
-            self.master.wait_heartbeat(timeout=10) # Increased timeout for initial connection
-            print(f"MAVLink: Heartbeat received from system {self.master.target_system} on {self.connection_string}. Connection established.")
-            print(f"MAVLink: Target system: {self.master.target_system}, component: {self.master.target_component}")
+            # CRITICAL CHECK: Validate the received heartbeat to ensure a real vehicle is connected
+            if self.master.target_system == 0 and self.master.target_component == 0:
+                print(f"MAVLink: Received invalid heartbeat (System ID 0). No actual vehicle detected on {self.connection_string}.")
+                self.master = None # Treat as no connection if invalid heartbeat
+            elif self.master.target_system!= 0 : # Check if a valid system ID was received
+                print(f"MAVLink: Heartbeat received from system {self.master.target_system} component {self.master.target_component} on {self.connection_string}. Connection established.")
+            else: # Catch-all for other unexpected scenarios after wait_heartbeat
+                print(f"MAVLink: wait_heartbeat returned but no valid target system ID (is {self.master.target_system}). Connection failed for {self.connection_string}.")
+                self.master = None
+            
+            print(f"MAVLink: Using target_system={self.master.target_system}, target_component={self.master.target_component}")
+            # Always use target_component=1 for mission protocol (typically the autopilot)
+            self.master.target_component = 1
+
         except Exception as e:
-            print(f"MAVLink: Failed to connect or receive heartbeat on {self.connection_string}: {e}")
-            self.master = None
-
+            print(f"MAVLink: EXCEPTION during connect or wait_heartbeat on {self.connection_string}: {e}")
+            self.master = None # Set master to None if connection fails
+            
     def is_connected(self):
-        # Optionally, also check if the last heartbeat was recent
+        """Checks if the MAVLink connection is currently active."""
         return self.master is not None
 
     def send_nav_waypoint(self, lat, lon, alt, hold_time=0, accept_radius=10, pass_radius=0, yaw_angle=float('nan')):
+        """
+        Sends a single MAV_CMD_NAV_WAYPOINT command as a "guided mode go to" instruction.
+        This is suitable for immediate, single-point navigation, not for full missions.
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot send waypoint.")
             return False
-        # Simplified: send as MISSION_ITEM_INT for guided mode style "goto"
-        # For full mission, use upload_mission
+        
         print(f"MAVLink: Sending MAV_CMD_NAV_WAYPOINT (as MISSION_ITEM_INT) to Lat: {lat}, Lon: {lon}, Alt: {alt}")
         try:
             self.master.mav.mission_item_int_send(
                 self.master.target_system, self.master.target_component,
-                0, # seq
-                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
-                mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                2, # current (2 for guided mode type command, 0 for mission item part of sequence)
-                1, # autocontinue
-                float(hold_time), float(accept_radius), float(pass_radius), float(yaw_angle),
-                int(lat * 1e7), int(lon * 1e7), float(alt)
+                0, # seq: Sequence number (0 for guided mode commands)
+                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, # Frame: Global coordinates with relative altitude
+                mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, # Command ID for navigation waypoint
+                2, # current: 2 for guided mode command, 0 for mission item
+                1, # autocontinue: 1 to proceed to next command (not applicable for single guided command)
+                float(hold_time), float(accept_radius), float(pass_radius), float(yaw_angle), # Command parameters
+                int(lat * 1e7), int(lon * 1e7), float(alt) # Latitude, Longitude (scaled), Altitude
             )
-            # Note: MISSION_ITEM_INT sent this way might not get a MISSION_ACK.
-            # It's more like a "guided mode go to". For missions, use upload_mission.
-            # For simplicity in execute_lifeguard_command, this might be used for single point nav.
             print("MAVLink: MAV_CMD_NAV_WAYPOINT (as MISSION_ITEM_INT) sent.")
             return True
         except Exception as e:
@@ -460,31 +588,52 @@ class MavlinkController:
             return False
 
     def upload_mission(self, waypoints_data):
+        """
+        Uploads a sequence of waypoints to the vehicle as a MAVLink mission.
+        The process involves clearing existing missions, sending the waypoint count,
+        and then sending each waypoint item upon request from the vehicle.
+        """
+        print("DEBUG: Entered upload_mission() with waypoints:", waypoints_data)
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot upload mission.")
             return False
+        print("DEBUG: Connection is alive, proceeding with mission upload.")
+        self.master.target_component = 1 # Ensure target component is autopilot (usually 1)
+        print(f"MAVLink: Mission upload using target_system={self.master.target_system}, target_component={self.master.target_component}")
+        
+        wp_loader = mavwp.MAVWPLoader() # Helper for managing waypoints
+        seq = 0
+        # Always add a "home" waypoint as the first item (sequence 0) for ArduPilot compatibility.
+        # This typically represents the vehicle's current location at mission start.
+        home_lat, home_lon, home_alt = waypoints_data[0][0], waypoints_data[0][1], 0 # Use first waypoint's lat/lon, alt 0 for home
+        home_item = mavutil.mavlink.MAVLink_mission_item_int_message(
+            self.master.target_system, 1, seq, mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 1, 0, 0, 0, 0,
+            int(home_lat * 1e7), int(home_lon * 1e7), float(home_alt)
+        )
+        wp_loader.add(home_item)
+        seq += 1 # Increment sequence for subsequent waypoints
 
-        wp_loader = mavwp.MAVWPLoader()
-        for seq, wp_item_tuple in enumerate(waypoints_data):
-            # Expected tuple: (lat, lon, alt, command_id, p1, p2, p3, p4, frame, current, autocontinue)
-            # Or simplified: (lat, lon, alt, command_id, p1, p2, p3, p4) and use defaults for others
-            if len(wp_item_tuple) == 8: # lat, lon, alt, cmd, p1, p2, p3, p4
+        # Add all provided waypoints to the loader
+        for wp_item_tuple in waypoints_data:
+            if len(wp_item_tuple) == 8: # (lat, lon, alt, command_id, p1, p2, p3, p4)
                 lat, lon, alt, command_id, p1, p2, p3, p4 = wp_item_tuple
                 frame = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
-                is_current = 0 # For mission items, usually 0. First item can be 1 if it's the start.
+                is_current = 0
                 autocontinue = 1
-            elif len(wp_item_tuple) == 11: # Full spec
+            elif len(wp_item_tuple) == 11: # (lat, lon, alt, command_id, p1, p2, p3, p4, frame, is_current, autocontinue)
                 lat, lon, alt, command_id, p1, p2, p3, p4, frame, is_current, autocontinue = wp_item_tuple
             else:
                 print(f"MAVLink: Waypoint item {seq} has incorrect format. Skipping.")
                 continue
-
+            
             mission_item = mavutil.mavlink.MAVLink_mission_item_int_message(
-                self.master.target_system, self.master.target_component, seq, frame, command_id,
+                self.master.target_system, 1, seq, frame, command_id,
                 is_current, autocontinue, p1, p2, p3, p4,
                 int(lat * 1e7), int(lon * 1e7), float(alt)
             )
             wp_loader.add(mission_item)
+            seq += 1
 
         if wp_loader.count() == 0:
             print("MAVLink: No valid waypoints to upload.")
@@ -492,25 +641,41 @@ class MavlinkController:
 
         print(f"MAVLink: Uploading {wp_loader.count()} waypoints...")
         try:
-            self.master.mav.mission_clear_all_send(self.master.target_system, self.master.target_component)
+            # Step 1: Clear any existing mission on the vehicle
+            print("MAVLink: Sending mission_clear_all_send")
+            self.master.mav.mission_clear_all_send(self.master.target_system, 1)
+            print("MAVLink: Waiting for MISSION_ACK after clear_all")
             ack = self.master.recv_match(type='MISSION_ACK', blocking=True, timeout=5)
-            if not ack or ack.type!= mavutil.mavlink.MAV_MISSION_ACCEPTED:
-                print(f"MAVLink: Failed to clear mission or no/bad ACK. ACK: {ack}")
-                # return False # Some autopilots might not send ACK for clear_all if no mission existed
+            print(f"MAVLink: Received ACK: {ack}")
+            time.sleep(1) # Short delay
 
-            self.master.mav.mission_count_send(self.master.target_system, self.master.target_component, wp_loader.count())
+            # Step 2: Inform the vehicle about the total number of waypoints to expect
+            print("MAVLink: Sending mission_count_send")
+            self.master.mav.mission_count_send(
+                self.master.target_system,
+                1, # Target component
+                wp_loader.count(), # Total number of waypoints
+                mavutil.mavlink.MAV_MISSION_TYPE_MISSION # Mission type
+            )
 
+            # Step 3: Send waypoints one by one as requested by the vehicle
             for i in range(wp_loader.count()):
-                msg = self.master.recv_match(type='MISSION_REQUEST_INT', blocking=True, timeout=5)
+                print(f"MAVLink: Waiting for MISSION_REQUEST_INT for waypoint {i}")
+                # Vehicle requests waypoints using MISSION_REQUEST or MISSION_REQUEST_INT
+                msg = self.master.recv_match(type=['MISSION_REQUEST', 'MISSION_REQUEST_INT'], blocking=True, timeout=5)
+                print(f"MAVLink: Received MISSION_REQUEST_INT: {msg}")
                 if not msg:
                     print(f"MAVLink: No MISSION_REQUEST received for waypoint {i}, upload failed.")
                     return False
                 print(f"MAVLink: Sending waypoint {msg.seq}")
-                self.master.mav.send(wp_loader.wp(msg.seq))
+                self.master.mav.send(wp_loader.wp(msg.seq)) # Send the requested waypoint
                 if msg.seq == wp_loader.count() - 1:
-                    break # Sent all waypoints
+                    break # Break after sending the last waypoint
 
-            final_ack = self.master.recv_match(type='MISSION_ACK', blocking=True, timeout=10) # Longer timeout for final ack
+            # Step 4: Wait for final MISSION_ACK to confirm successful upload
+            print("MAVLink: Waiting for final MISSION_ACK")
+            final_ack = self.master.recv_match(type='MISSION_ACK', blocking=True, timeout=10)
+            print(f"MAVLink: Received final ACK: {final_ack}")
             if final_ack and final_ack.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
                 print("MAVLink: Mission upload successful.")
                 return True
@@ -523,68 +688,58 @@ class MavlinkController:
 
     def _calculate_rectangular_grid_waypoints(self, center_lat, center_lon, grid_width_m, grid_height_m, swath_width_m, altitude_m, orientation_deg=0):
         """
-        Calculates waypoints for a rectangular lawnmower pattern.
-        Orientation 0 means N-S tracks, 90 means E-W tracks.
-        For simplicity, this example implements N-S tracks (orientation_deg = 0).
-        Returns a list of (lat, lon, alt) tuples.
+        Calculates waypoints for a rectangular lawnmower search pattern.
+        The pattern consists of parallel tracks covering the specified grid area.
+        Orientation 0 means North-South tracks, 90 means East-West tracks.
+        This simplified example assumes North-South tracks (orientation_deg = 0).
+        Returns a list of (latitude, longitude, altitude) tuples.
         """
         waypoints = []
         if swath_width_m <= 0 or grid_width_m <= 0 or grid_height_m <= 0:
             print("MAVLink: Invalid grid parameters for calculation.")
             return waypoints
 
-        # Convert center lat/lon to radians
+        # Convert center lat/lon to radians for calculations
         center_lat_rad = math.radians(center_lat)
         center_lon_rad = math.radians(center_lon)
 
-        # For N-S tracks (orientation 0), grid_width is along longitude, grid_height is along latitude
-        # For E-W tracks (orientation 90), grid_width is along latitude, grid_height is along longitude
-        # This simplified version assumes orientation_deg = 0 (N-S tracks)
-
-        # Half dimensions
+        # Calculate half dimensions of the grid
         half_width_m = grid_width_m / 2.0
         half_height_m = grid_height_m / 2.0
-
-        # Calculate deltas in lat/lon for grid corners from center using simple equirectangular projection
-        # More accurate methods would use Vincenty or Haversine for destination point given start, bearing, distance
-        # dLat = dy / R_earth
-        # dLon = dx / (R_earth * cos(center_lat_rad))
         
-        # Start point of the grid (e.g., South-West corner for N-S tracks starting from West)
-        # Calculate SW corner relative to center
-        # Bearing to West is 270 deg, to South is 180 deg.
-        # For simplicity, let's define the grid boundaries first.
-        
-        # Latitude boundaries
+        # Calculate latitude boundaries (South and North) from the center
         lat_delta_rad = half_height_m / EARTH_RADIUS_METERS
         south_lat_rad = center_lat_rad - lat_delta_rad
         north_lat_rad = center_lat_rad + lat_delta_rad
 
-        # Longitude boundaries
+        # Calculate longitude boundaries (West) from the center.
+        # The longitude delta depends on the latitude (Earth's circumference varies with latitude).
         lon_delta_rad = half_width_m / (EARTH_RADIUS_METERS * math.cos(center_lat_rad))
         west_lon_rad = center_lon_rad - lon_delta_rad
         # east_lon_rad = center_lon_rad + lon_delta_rad # Not directly used if stepping by swath
 
+        # Determine the number of parallel tracks needed to cover the grid width
         num_tracks = int(math.floor(grid_width_m / swath_width_m))
-        if num_tracks == 0 and grid_width_m > 0: num_tracks = 1
-        if num_tracks == 0: return waypoints
+        if num_tracks == 0 and grid_width_m > 0: num_tracks = 1 # Ensure at least one track if width > 0
+        if num_tracks == 0: return waypoints # No tracks if grid width is zero
 
-        # Calculate swath width in radians of longitude
+        # Calculate the step size in longitude radians for each swath
         swath_lon_rad_step = swath_width_m / (EARTH_RADIUS_METERS * math.cos(center_lat_rad))
 
+        # Generate waypoints for each track
         for i in range(num_tracks):
+            # Calculate the longitude for the current track
             current_track_lon_rad = west_lon_rad + i * swath_lon_rad_step
-            # To make it perfectly centered, the first track could be at west_lon_rad + swath_lon_rad_step / 2
-            # For now, starting at the western edge of the first swath.
-
+            # Convert back to degrees for waypoint definition
             current_track_lon_deg = math.degrees(current_track_lon_rad)
             south_lat_deg = math.degrees(south_lat_rad)
             north_lat_deg = math.degrees(north_lat_rad)
 
-            if i % 2 == 0:  # Northbound leg (starting from South)
+            # Alternate direction for each track (lawnmower pattern)
+            if i % 2 == 0:  # Northbound leg (starts from South latitude, goes to North latitude)
                 waypoints.append((south_lat_deg, current_track_lon_deg, altitude_m))
                 waypoints.append((north_lat_deg, current_track_lon_deg, altitude_m))
-            else:  # Southbound leg (starting from North)
+            else:  # Southbound leg (starts from North latitude, goes to South latitude)
                 waypoints.append((north_lat_deg, current_track_lon_deg, altitude_m))
                 waypoints.append((south_lat_deg, current_track_lon_deg, altitude_m))
         
@@ -592,12 +747,16 @@ class MavlinkController:
         return waypoints
 
     def generate_and_upload_search_grid_mission(self, center_lat, center_lon, grid_size_m, swath_width_m, altitude_m):
+        """
+        Generates a square search grid mission and uploads it to the active vehicle.
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot generate/upload search grid.")
             return False
 
         print(f"MAVLink: Generating search grid: Center=({center_lat:.6f}, {center_lon:.6f}), Size={grid_size_m}m, Swath={swath_width_m}m, Alt={altitude_m}m")
 
+        # Calculate the actual waypoints for the grid
         grid_waypoints_tuples = self._calculate_rectangular_grid_waypoints(
             center_lat, center_lon, grid_size_m, grid_size_m, swath_width_m, altitude_m
         )
@@ -606,31 +765,36 @@ class MavlinkController:
             print("MAVLink: Failed to generate grid waypoints.")
             return False
 
+        # Format waypoints for mission upload (adding MAVLink command parameters)
         waypoints_data_for_upload = []
         for lat, lon, alt in grid_waypoints_tuples:
             waypoints_data_for_upload.append(
                 (lat, lon, alt,
-                 mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                 mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, # Command for a navigation waypoint
                  0.0,  # param1 (hold time seconds)
                  10.0, # param2 (acceptance radius meters)
                  0.0,  # param3 (pass radius meters, 0 to pass through center)
                  float('nan') # param4 (desired yaw angle at waypoint, NaN for unchanged)
                 )
             )
-        
-        return self.upload_mission(waypoints_data_for_upload)
+            
+        return self.upload_mission(waypoints_data_for_upload) # Upload the generated mission
 
     def send_status_text(self, text_to_send, severity=mavutil.mavlink.MAV_SEVERITY_INFO):
+        """
+        Sends a STATUSTEXT MAVLink message to the vehicle.
+        This can be used to send arbitrary text messages to the vehicle's GCS or logs.
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot send STATUSTEXT.")
             return False
 
         if isinstance(text_to_send, str):
-            text_bytes = text_to_send.encode('utf-8')
+            text_bytes = text_to_send.encode('utf-8') # Encode string to bytes
         else: # Assume already bytes
             text_bytes = text_to_send
 
-        # STATUSTEXT has a 50-byte limit for text (49 chars + NUL)
+        # STATUSTEXT has a 50-byte limit for text payload (49 characters + NUL terminator)
         payload_text_bytes = text_bytes[:49]
 
         try:
@@ -643,6 +807,10 @@ class MavlinkController:
             return False
 
     def wait_for_waypoint_reached(self, waypoint_sequence_id, timeout_seconds=120):
+        """
+        Waits for the vehicle to report that it has reached a specific mission waypoint.
+        Monitors for MISSION_ITEM_REACHED messages.
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot wait for waypoint.")
             return False
@@ -650,89 +818,72 @@ class MavlinkController:
         print(f"MAVLink: Waiting for vehicle to reach mission waypoint sequence ID {waypoint_sequence_id}...")
         start_time = time.time()
         while time.time() - start_time < timeout_seconds:
-            # Use blocking with a short timeout to allow other processing if this were in a thread
+            # Receive MAVLink messages, blocking for up to 1 second
             msg = self.master.recv_match(type='MISSION_ITEM_REACHED', blocking=True, timeout=1)
             if msg:
                 print(f"MAVLink: Received MISSION_ITEM_REACHED with sequence {msg.seq}")
                 if msg.seq == waypoint_sequence_id:
                     print(f"MAVLink: Vehicle has reached target waypoint {waypoint_sequence_id}.")
                     return True
-            # Add a small delay to prevent tight loop if not using blocking or if timeout is very short
-            # time.sleep(0.05) # Not strictly needed with blocking=True and timeout=1
         print(f"MAVLink: Timeout waiting for waypoint {waypoint_sequence_id} to be reached.")
         return False
 
     def set_mode(self, mode_name):
+        """
+        Sets the flight mode of the vehicle (e.g., "AUTO", "GUIDED", "LOITER").
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot set mode.")
             return False
-        
-        mode_mapping = self.master.mode_mapping()
-        if mode_mapping is None:
-            print(f"MAVLink: Mode mapping not available for {self.connection_string}. Cannot set mode.")
-            # Fallback for some custom firmwares or if heartbeat didn't fully populate mode_mapping
-            # This is a basic attempt, might not work for all autopilots.
-            # ArduPilot custom modes: https://ardupilot.org/copter/docs/parameters.html#fltmode1
-            # PX4 custom modes: https://docs.px4.io/main/en/flight_modes/
-            # This requires knowing the specific mode IDs.
-            # For ArduCopter: STABILIZE=0, ACRO=1, ALT_HOLD=2, AUTO=3, GUIDED=4, LOITER=5, RTL=6, LAND=9
-            # For ArduPlane: MANUAL=0, CIRCLE=1, STABILIZE=2, FBWA=5, FBWB=6, AUTO=10, RTL=11, LOITER=12, GUIDED=15
-            # This is highly autopilot-specific if mode_mapping() fails.
-            # For now, we'll rely on mode_mapping() being present.
-            print("MAVLink: Attempting to set mode by name directly (may not be reliable).")
-            try:
-                mode_id = self.master.mode_mapping()[mode_name.upper()]
-            except KeyError:
-                 print(f"MAVLink: Unknown mode: {mode_name}. Available modes from mapping: {list(mode_mapping.keys()) if mode_mapping else 'None'}")
-                 return False
-            except TypeError: # mode_mapping is None
-                 print(f"MAVLink: Mode mapping is None. Cannot set mode {mode_name}.")
-                 return False
 
-        else: # mode_mapping is available
-            if mode_name.upper() not in mode_mapping:
-                print(f"MAVLink: Unknown mode: {mode_name}")
-                print(f"MAVLink: Available modes: {list(mode_mapping.keys())}")
-                return False
-            mode_id = mode_mapping[mode_name.upper()]
+        # Get the mapping of mode names to mode IDs from the MAVLink connection
+        mode_mapping = self.master.mode_mapping()
+        if mode_mapping is None or mode_name.upper() not in mode_mapping:
+            print(f"MAVLink: Unknown mode: {mode_name}")
+            return False
+        mode_id = mode_mapping[mode_name.upper()]
 
         print(f"MAVLink: Setting mode to {mode_name.upper()} (ID: {mode_id})...")
-        # master.set_mode(mode_id) # pymavlink set_mode is a higher-level helper
         try:
             self.master.mav.set_mode_send(
                 self.master.target_system,
-                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, # base_mode
-                mode_id # custom_mode
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, # Flag indicating custom mode is enabled
+                mode_id # The ID of the desired flight mode
             )
+            # Wait for a COMMAND_ACK message to confirm the mode change
             ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-            if ack_msg and ack_msg.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE:
+            if ack_msg:
+                print(f"MAVLink: Received COMMAND_ACK for mode change: {ack_msg}")
                 if ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
-                    print(f"MAVLink: Mode change to {mode_name.upper()} successful.")
+                    print(f"MAVLink: Mode change to {mode_name.upper()} accepted.")
                     return True
                 else:
                     print(f"MAVLink: Mode change to {mode_name.upper()} failed with result: {ack_msg.result}")
                     return False
             else:
-                print(f"MAVLink: No/unexpected COMMAND_ACK received for mode change. ACK: {ack_msg}")
+                print("MAVLink: No COMMAND_ACK received for mode change.")
                 return False
         except Exception as e:
             print(f"MAVLink: Error setting mode: {e}")
             return False
 
-
     def start_mission(self):
+        """
+        Sends a command to the vehicle to start the uploaded mission.
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot start mission.")
             return False
         print("MAVLink: Sending MAV_CMD_MISSION_START...")
         self.master.mav.command_long_send(
             self.master.target_system, self.master.target_component,
-            mavutil.mavlink.MAV_CMD_MISSION_START,
-            0, # confirmation
-            0, # param1 (first_item)
-            0, # param2 (last_item, 0 for all)
-            0, 0, 0, 0, 0 # params 3-7
+            mavutil.mavlink.MAV_CMD_MISSION_START, # Command ID to start mission
+            0, # confirmation (0 for no confirmation needed)
+            0, # param1 (first_item: 0 to start from the beginning)
+            0, # param2 (last_item: 0 for all items)
+            0, 0, 0, 0, 0 # Unused parameters
         )
+        # Wait for COMMAND_ACK to confirm mission start
         ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
         if ack_msg and ack_msg.command == mavutil.mavlink.MAV_CMD_MISSION_START and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
             print("MAVLink: Mission start command accepted.")
@@ -742,29 +893,36 @@ class MavlinkController:
             return False
 
     def arm_vehicle(self):
+        """
+        Sends a command to arm the vehicle's motors.
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot arm.")
             return False
         print("MAVLink: Attempting to arm vehicle...")
         self.master.mav.command_long_send(
             self.master.target_system, self.master.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, # Command ID for arm/disarm
             0, # confirmation
             1, # param1 (1 to arm, 0 to disarm)
-            0, 0, 0, 0, 0, 0 # params 2-7
+            0, 0, 0, 0, 0, 0 # Unused parameters
         )
+        # Wait for COMMAND_ACK to confirm arming
         ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=5) # Longer timeout for arming
         if ack_msg and ack_msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
             print("MAVLink: Vehicle armed successfully.")
             return True
         else:
             # Common arming failure reasons: MAV_RESULT_TEMPORARILY_REJECTED (4), MAV_RESULT_FAILED (5)
-            # These often correspond to safety checks failing (e.g., not GPS lock, pre-arm checks failed)
+            # These often correspond to safety checks failing (e.g., no GPS lock, pre-arm checks failed)
             res_text = f"result code {ack_msg.result}" if ack_msg else "no ACK"
             print(f"MAVLink: Arming failed ({res_text}). Ensure pre-arm checks are passing. ACK: {ack_msg}")
             return False
 
     def disarm_vehicle(self):
+        """
+        Sends a command to disarm the vehicle's motors.
+        """
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot disarm.")
             return False
@@ -772,8 +930,9 @@ class MavlinkController:
         self.master.mav.command_long_send(
             self.master.target_system, self.master.target_component,
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0, 0, 0, 0, 0, 0, 0, 0
+            0, 0, 0, 0, 0, 0, 0, 0 # param1 (0 to disarm)
         )
+        # Wait for COMMAND_ACK to confirm disarming
         ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
         if ack_msg and ack_msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
             print("MAVLink: Vehicle disarmed successfully.")
@@ -783,116 +942,135 @@ class MavlinkController:
             return False
 
     def close_connection(self):
+        """Closes the MAVLink connection."""
         if self.master:
             self.master.close()
             print(f"MAVLink: Connection closed for {self.connection_string}.")
 
-
 # --- STATE MACHINE DEFINITION ---
 class LifeguardAppSM(StateMachine):
-    idle = State(initial=True)
-    listening_command = State()
-    processing_command = State()
-    speaking_confirmation = State()
-    awaiting_yes_no = State()
-    listening_yes_no = State()
-    processing_yes_no = State()
-    executing_action = State()
+    """
+    Defines the state machine for the Lifeguard application, managing the flow
+    of user interaction (listening, processing, confirming, executing).
+    """
+    # Define states
+    idle = State(initial=True) # Initial state: ready for a new command
+    listening_command = State() # Recording user's command
+    processing_command = State() # Processing recorded command (STT, NLU)
+    speaking_confirmation = State() # Speaking confirmation prompt to user
+    awaiting_yes_no = State() # Waiting for user to press PTT for yes/no
+    listening_yes_no = State() # Recording user's yes/no response
+    processing_yes_no = State() # Processing yes/no response (STT)
+    executing_action = State() # Performing the MAVLink command
 
-    event_ptt_start_command = idle.to(listening_command)
-    event_ptt_stop_command = listening_command.to(processing_command)
+    # Define transitions between states based on events
+    event_ptt_start_command = idle.to(listening_command) # PTT pressed in idle state
+    event_ptt_stop_command = listening_command.to(processing_command) # PTT released after command
     event_command_recognized = processing_command.to(speaking_confirmation, cond="confirmation_needed_flag") | \
-                               processing_command.to(executing_action, unless="confirmation_needed_flag")
-    event_stt_failed_command = processing_command.to(idle)
-    event_confirmation_spoken = speaking_confirmation.to(awaiting_yes_no)
-    event_ptt_start_yes_no = awaiting_yes_no.to(listening_yes_no)
-    event_ptt_stop_yes_no = listening_yes_no.to(processing_yes_no)
-    event_yes_confirmed = processing_yes_no.to(executing_action)
-    event_no_confirmed = processing_yes_no.to(idle)
-    event_stt_failed_yes_no = processing_yes_no.to(awaiting_yes_no) # Re-prompt
-    event_action_completed = executing_action.to(idle)
+                               processing_command.to(executing_action, unless="confirmation_needed_flag") # Command recognized, transition based on confirmation need
+    event_stt_failed_command = processing_command.to(idle) # STT failed for command, return to idle
+    event_confirmation_spoken = speaking_confirmation.to(awaiting_yes_no) # Confirmation spoken, await yes/no
+    event_ptt_start_yes_no = awaiting_yes_no.to(listening_yes_no) # PTT pressed for yes/no
+    event_ptt_stop_yes_no = listening_yes_no.to(processing_yes_no) # PTT released after yes/no
+    event_yes_confirmed = processing_yes_no.to(executing_action) # User confirmed with "yes"
+    event_no_confirmed = processing_yes_no.to(idle) # User confirmed with "no", return to idle
+    event_stt_failed_yes_no = processing_yes_no.to(awaiting_yes_no) # STT failed for yes/no, re-prompt
+    event_action_completed = executing_action.to(idle) # MAVLink action completed, return to idle
+    # Global shutdown event, can transition from any state to idle
     event_shutdown_requested = idle.to(idle) | listening_command.to(idle) | \
                                processing_command.to(idle) | speaking_confirmation.to(idle) | \
                                awaiting_yes_no.to(idle) | listening_yes_no.to(idle) | \
                                processing_yes_no.to(idle) | executing_action.to(idle)
 
-
     def __init__(self, model_ref):
-        self.app = model_ref
-        self.captured_command_audio_data = None
-        self.captured_yes_no_audio_data = None
-        self._confirmation_needed_flag_internal = False
-        super().__init__()
+        self.app = model_ref # Reference to the main LifeguardApp instance
+        self.captured_command_audio_data = None # Stores audio for the main command
+        self.captured_yes_no_audio_data = None # Stores audio for yes/no confirmation
+        self._confirmation_needed_flag_internal = False # Internal flag to control confirmation flow
+        super().__init__() # Initialize the StateMachine base class
 
     def confirmation_needed_flag(self, event_data):
+        """Condition for state transition: checks if confirmation is needed."""
         return self._confirmation_needed_flag_internal
 
+    # State entry/exit actions (callbacks)
     def on_enter_listening_command(self, event_data):
+        """Action when entering the LISTENING_COMMAND state."""
         print("SM: State -> LISTENING_COMMAND")
         self.app.speak("Listening for command...")
         self.app.start_audio_recording()
 
     def on_exit_listening_command(self, event_data):
+        """Action when exiting the LISTENING_COMMAND state."""
         print("SM: Exiting LISTENING_COMMAND")
         self.captured_command_audio_data = self.app.stop_audio_recording()
 
     def on_enter_processing_command(self, event_data):
+        """Action when entering the PROCESSING_COMMAND state."""
         print("SM: State -> PROCESSING_COMMAND")
+        # Process the captured audio data using STT and NLU
         command_text, needs_conf, is_stop_command = self.app.process_command_stt(self.captured_command_audio_data)
         if is_stop_command:
             self.app.initiate_shutdown("Stop command recognized.")
-            self.send("event_shutdown_requested")
+            self.send("event_shutdown_requested") # Trigger shutdown event
             return
 
         if command_text:
-            self._confirmation_needed_flag_internal = needs_conf
-            self.send("event_command_recognized")
+            self._confirmation_needed_flag_internal = needs_conf # Set confirmation flag based on NLU result
+            self.send("event_command_recognized") # Trigger command recognized event
         else:
             self.app.speak("Sorry, I could not understand the command. Please try again.")
-            self.send("event_stt_failed_command")
+            self.send("event_stt_failed_command") # Trigger STT failed event
 
     def on_enter_speaking_confirmation(self, event_data):
+        """Action when entering the SPEAKING_CONFIRMATION state."""
         print("SM: State -> SPEAKING_CONFIRMATION")
         prompt = f"Did you say: {self.app.command_to_execute_display_text}? Please press space and say yes or no."
         self.app.speak(prompt)
-        self.send("event_confirmation_spoken")
+        self.send("event_confirmation_spoken") # Trigger confirmation spoken event
 
     def on_enter_awaiting_yes_no(self, event_data):
+        """Action when entering the AWAITING_YES_NO state."""
         print("SM: State -> AWAITING_YES_NO")
 
     def on_enter_listening_yes_no(self, event_data):
+        """Action when entering the LISTENING_YES_NO state."""
         print("SM: State -> LISTENING_YES_NO")
         self.app.speak("Listening for yes or no...")
         self.app.start_audio_recording()
 
     def on_exit_listening_yes_no(self, event_data):
+        """Action when exiting the LISTENING_YES_NO state."""
         print("SM: Exiting LISTENING_YES_NO")
         self.captured_yes_no_audio_data = self.app.stop_audio_recording()
 
     def on_enter_processing_yes_no(self, event_data):
+        """Action when entering the PROCESSING_YES_NO state."""
         print("SM: State -> PROCESSING_YES_NO")
-        response = self.app.process_yes_no_stt(self.captured_yes_no_audio_data)
+        response = self.app.process_yes_no_stt(self.captured_yes_no_audio_data) # Process yes/no audio
         if response == "yes":
-            self.send("event_yes_confirmed")
+            self.send("event_yes_confirmed") # Trigger yes confirmed event
         elif response == "no":
             self.app.speak("Okay, command cancelled.")
-            self.send("event_no_confirmed")
+            self.send("event_no_confirmed") # Trigger no confirmed event
         else:
             self.app.speak("Sorry, I didn't catch that. Please try saying yes or no again.")
-            self.send("event_stt_failed_yes_no")
+            self.send("event_stt_failed_yes_no") # Trigger STT failed for yes/no, re-prompt
 
     def on_enter_executing_action(self, event_data):
-        print("SM: State -> EXECUTING_ACTION")
-        # Run execution in a separate thread to keep SM responsive if action is long
-        action_thread = threading.Thread(target=self.app.execute_lifeguard_command_wrapper)
-        action_thread.daemon = True # Ensure thread doesn't block app exit
-        action_thread.start()
-        # The execute_lifeguard_command_wrapper will call self.send("event_action_completed")
+        """Action when entering the EXECUTING_ACTION state."""
+        print("DEBUG: Starting execute_lifeguard_command_wrapper thread")
+        # Execute the MAVLink command in a separate thread to avoid blocking the main loop
+        self.app.action_thread = threading.Thread(target=self.app.execute_lifeguard_command_wrapper)
+        self.app.action_thread.daemon = False # Make it non-daemon so we can join it during shutdown
+        self.app.action_thread.start()
 
     def on_enter_idle(self, event_data):
+        """Action when entering the IDLE state (resetting for next command)."""
         source_id = event_data.source.id if event_data.source else "INITIAL"
         event_name = event_data.event if event_data.event else "INIT"
         print(f"SM: State -> IDLE (from {source_id} via {event_name})")
+        # Clear command data and reset flags
         self.app.command_to_execute_display_text = None
         self.app.original_nlu_result_for_execution = None
         self._confirmation_needed_flag_internal = False
@@ -900,18 +1078,21 @@ class LifeguardAppSM(StateMachine):
             active_agent_display = f" (Active Agent: {self.app.active_agent_id})" if self.app.active_agent_id else ""
             print(f"\nSystem ready{active_agent_display}. Press and hold SPACE to speak, or ESC to exit.")
 
-
 # --- MAIN APPLICATION CLASS ---
 class LifeguardApp:
+    """
+    The main application class that orchestrates STT, NLU, MAVLink communication,
+    and the state machine for voice-controlled vehicle operations.
+    """
     def __init__(self):
         print("Initializing Commander Intent System with PTT...")
-        self.running_flag = True
+        self.running_flag = True # Flag to control the main application loop
         self.pyaudio_instance = None
         self.stt_system = None
         self.nlu_system = None
         
-        self.mav_controllers = {} # Dict to store {'agent_id': MavlinkController_instance}
-        self.active_agent_id = INITIAL_ACTIVE_AGENT_ID
+        self.mav_controllers = {} # Dictionary to store MavlinkController instances for each agent
+        self.active_agent_id = INITIAL_ACTIVE_AGENT_ID # Currently selected agent for commands
         if not AGENT_CONNECTION_CONFIGS:
             print("FATAL ERROR: No agents defined in AGENT_CONNECTION_CONFIGS. Exiting.")
             self.running_flag = False
@@ -921,23 +1102,24 @@ class LifeguardApp:
             self.active_agent_id = next(iter(AGENT_CONNECTION_CONFIGS))
             print(f"Warning: Initial active agent ID '{INITIAL_ACTIVE_AGENT_ID}' not found. Defaulting to '{self.active_agent_id}'.")
 
+        self.tts_engine = None # Text-to-Speech engine
+        self.keyboard_listener = None # Keyboard listener for Push-To-Talk
+        self.sm = None # State machine instance
 
-        self.tts_engine = None
-        self.keyboard_listener = None
-        self.sm = None
+        self.audio_frames = [] # Buffer to store recorded audio chunks
+        self.is_space_currently_pressed = False # Flag for PTT state
+        self.current_audio_stream = None # PyAudio stream object
 
-        self.audio_frames = []
-        self.is_space_currently_pressed = False
-        self.current_audio_stream = None
+        self.command_to_execute_display_text = None # Text of the command for confirmation
+        self.original_nlu_result_for_execution = None # Full NLU result for command execution
+        self.action_thread = None # Thread for executing MAVLink actions
 
-        self.command_to_execute_display_text = None
-        self.original_nlu_result_for_execution = None
-
-        self._initialize_components()
-        if self.running_flag: # Only init SM if components are okay
+        self._initialize_components() # Initialize all sub-systems
+        if self.running_flag: # Only initialize SM if components are okay
             self.sm = LifeguardAppSM(model_ref=self)
 
     def _initialize_components(self):
+        """Initializes PyAudio, STT, NLU, MAVLink controllers, and TTS engine."""
         self.pyaudio_instance = pyaudio.PyAudio()
         try:
             self.stt_system = SpeechToText(model_path=VOSK_MODEL_PATH, sample_rate=AUDIO_SAMPLE_RATE)
@@ -960,7 +1142,7 @@ class LifeguardApp:
 
         for agent_id, config in AGENT_CONNECTION_CONFIGS.items():
             conn_str = config["connection_string"]
-            # Baudrate is primarily for serial. For UDP/TCP, mavutil often infers or ignores it.
+            # Baudrate is primarily for serial connections. For UDP/TCP, mavutil often infers or ignores it.
             baud = config.get("baudrate") if conn_str.startswith(("/dev/", "COM", "com")) else None
             src_sys_id = config.get("source_system_id", MAVLINK_SOURCE_SYSTEM_ID)
             
@@ -971,13 +1153,12 @@ class LifeguardApp:
                 print(f"MAVLink controller for agent {agent_id} connected successfully.")
             else:
                 print(f"Warning: Failed to connect MAVLink controller for agent {agent_id} on {conn_str}.")
-                # Decide if this is fatal or if the app can run with some agents offline
-                # For now, we'll allow it but it won't be selectable.
+                # For now, we'll allow the app to run with some agents offline, but they won't be selectable.
 
-        if not self.mav_controllers: # No controllers connected successfully
-             print("Fatal Error: Could not connect to any MAVLink agents specified in AGENT_CONNECTION_CONFIGS.")
-             self.running_flag = False; return
-        
+        if not self.mav_controllers: # If no controllers connected successfully
+            print("Fatal Error: Could not connect to any MAVLink agents specified in AGENT_CONNECTION_CONFIGS.")
+            self.running_flag = False; return
+            
         if self.active_agent_id not in self.mav_controllers:
             # If the initially selected active agent failed to connect, try to pick one that did
             if self.mav_controllers:
@@ -989,12 +1170,13 @@ class LifeguardApp:
 
 
         try:
-            self.tts_engine = pyttsx3.init()
+            self.tts_engine = pyttsx3.init() # Initialize the Text-to-Speech engine
             print("TTS (pyttsx3): Engine initialized.")
         except Exception as e:
-            print(f"Error initializing TTS engine: {e}") # Non-fatal
+            print(f"Error initializing TTS engine: {e}") # Non-fatal, app can still run without TTS
 
     def _get_active_mav_controller(self):
+        """Retrieves the MavlinkController instance for the currently active agent."""
         if not self.active_agent_id:
             print("Error: No active agent selected.")
             return None
@@ -1008,17 +1190,20 @@ class LifeguardApp:
         return controller
 
     def _setup_keyboard_listener(self):
+        """Sets up the keyboard listener for Push-To-Talk (PTT) functionality."""
         self.keyboard_listener = keyboard.Listener(
             on_press=self._on_ptt_press,
             on_release=self._on_ptt_release
         )
-        self.keyboard_listener.run()  # This blocks and processes events in the main thread
+        self.keyboard_listener.run() # This blocks and processes keyboard events in the main thread
 
     def _on_ptt_press(self, key):
+        """Callback function for keyboard key press events (PTT activation)."""
         if key == keyboard.Key.space:
             if not self.is_space_currently_pressed:
                 self.is_space_currently_pressed = True
                 try:
+                    # Trigger state machine events based on current state
                     if self.sm.current_state == self.sm.idle:
                         self.sm.event_ptt_start_command()
                     elif self.sm.current_state == self.sm.awaiting_yes_no:
@@ -1027,13 +1212,15 @@ class LifeguardApp:
                     print(f"SM Warning: PTT press not allowed in state {self.sm.current_state.id}")
         elif key == keyboard.Key.esc:
             self.initiate_shutdown("ESC key pressed.")
-            return False # Stop listener
+            return False # Stop the keyboard listener
 
     def _on_ptt_release(self, key):
+        """Callback function for keyboard key release events (PTT deactivation)."""
         if key == keyboard.Key.space:
             if self.is_space_currently_pressed:
                 self.is_space_currently_pressed = False
                 try:
+                    # Trigger state machine events based on current state
                     if self.sm.current_state == self.sm.listening_command:
                         self.sm.event_ptt_stop_command()
                     elif self.sm.current_state == self.sm.listening_yes_no:
@@ -1042,16 +1229,17 @@ class LifeguardApp:
                     print(f"SM Warning: PTT release not allowed in state {self.sm.current_state.id}")
 
     def start_audio_recording(self):
+        """Starts recording audio from the microphone."""
         if not self.running_flag:
             return
         print("Audio: Starting recording stream...")
-        self.audio_frames = []
+        self.audio_frames = [] # Clear previous audio frames
         try:
             self.current_audio_stream = self.pyaudio_instance.open(
                 format=AUDIO_FORMAT,
                 channels=AUDIO_CHANNELS,
                 rate=AUDIO_SAMPLE_RATE,
-                input=True,
+                input=True, # Set as input stream
                 frames_per_buffer=AUDIO_FRAMES_PER_BUFFER
             )
             self.current_audio_stream.start_stream()
@@ -1059,12 +1247,14 @@ class LifeguardApp:
             print(f"PyAudio Error: Could not open stream: {e}")
             self.speak("Error: Could not access microphone.")
             self.current_audio_stream = None
+            # If microphone access fails, transition the state machine accordingly
             if self.sm.current_state == self.sm.listening_command:
                 self.sm.send("event_stt_failed_command")
             elif self.sm.current_state == self.sm.listening_yes_no:
                 self.sm.send("event_stt_failed_yes_no")
 
     def stop_audio_recording(self):
+        """Stops recording audio and returns the captured audio data as bytes."""
         if not self.current_audio_stream:
             return b''
         print("Audio: Stopping recording stream...")
@@ -1075,80 +1265,117 @@ class LifeguardApp:
         except Exception as e:
             print(f"PyAudio Error: Could not properly close stream: {e}")
         self.current_audio_stream = None
-        return b''.join(self.audio_frames)
+        return b''.join(self.audio_frames) # Concatenate all recorded frames
 
     def run(self):
+        """
+        Starts the main application loop.
+        This loop continuously reads audio if PTT is active and manages the application's lifecycle.
+        """
         if not self.running_flag:
             print("Application cannot start due to initialization errors.")
             self.cleanup()
             return
 
         def main_loop():
+            """Background thread for continuous audio reading when PTT is active."""
             while self.running_flag:
+                # Check if PTT is pressed and audio stream is active for recording
                 if self.is_space_currently_pressed and \
                    (self.sm.current_state == self.sm.listening_command or \
                     self.sm.current_state == self.sm.listening_yes_no) and \
                    self.current_audio_stream and not self.current_audio_stream.is_stopped():
                     try:
+                        # Read audio data from the stream
                         data = self.current_audio_stream.read(AUDIO_READ_CHUNK, exception_on_overflow=False)
                         self.audio_frames.append(data)
                     except IOError as e:
                         print(f"Audio read error: {e}")
                         self.speak("Microphone error during recording.")
+                        # If an audio error occurs, simulate PTT release to stop recording
                         if self.is_space_currently_pressed:
                             self.is_space_currently_pressed = False
                             if self.sm.current_state == self.sm.listening_command:
                                 self.sm.event_ptt_stop_command()
                             elif self.sm.current_state == self.sm.listening_yes_no:
                                 self.sm.event_ptt_stop_yes_no()
-                time.sleep(0.01)
+                time.sleep(0.01) # Small delay to prevent busy-waiting
             print("Exiting main application loop.")
-            self.cleanup()
+            self.cleanup() # Perform cleanup when the loop exits
 
-        # Start main loop in a background thread
+        # Start the main audio reading loop in a background thread
         t = threading.Thread(target=main_loop, daemon=True)
         t.start()
 
         self.speak("System initialized.")
         active_agent_display = f" (Active Agent: {self.active_agent_id})" if self.active_agent_id else ""
         print(f"\nSystem ready{active_agent_display}. Press and hold SPACE to speak, or ESC to exit.")
+        # Ensure the state machine is in the idle state at startup
         if self.sm.current_state != self.sm.idle:
             try:
-                self.sm.send("event_shutdown_requested")
+                self.sm.send("event_shutdown_requested") # Force transition to idle
             except Exception as e:
                 print(f"Error forcing SM to idle: {e}")
 
-        # Run the keyboard listener in the main thread (blocking)
+        # Run the keyboard listener in the main thread (this call is blocking)
         self._setup_keyboard_listener()
 
-        # After the keyboard listener exits (ESC pressed), set running_flag to False to stop main_loop
+        # After the keyboard listener exits (e.g., ESC key pressed), set running_flag to False
+        # to signal the main_loop thread to stop.
         self.running_flag = False
-        # Wait for the main loop thread to finish before exiting
-        t.join()
+        t.join() # Wait for the main loop thread to finish before exiting the application
 
     def speak(self, text_to_speak):
+        """
+        Uses the TTS engine to speak the given text.
+        Handles running TTS in the main thread to avoid pyttsx3 issues.
+        """
+        def _do_tts(text):
+            """Internal function to perform the TTS synthesis."""
+            try:
+                self.tts_engine.say(text)
+                self.tts_engine.runAndWait()
+            except Exception as e:
+                print(f"TTS Error: {e}")
+
         if self.tts_engine and self.running_flag:
             print(f"TTS: Saying: '{text_to_speak}'")
-            try:
-                self.tts_engine.say(text_to_speak)
-                self.tts_engine.runAndWait()
-            except Exception as e: print(f"TTS Error: {e}")
+            if threading.current_thread() is threading.main_thread():
+                _do_tts(text_to_speak) # If already in main thread, execute directly
+            else:
+                # If not in main thread, schedule TTS on main thread using a queue
+                import queue
+                if not hasattr(self, '_tts_queue'):
+                    self._tts_queue = queue.Queue()
+                    # Start a dedicated thread to process TTS requests from the queue
+                    def tts_main_loop():
+                        while self.running_flag:
+                            try:
+                                text = self._tts_queue.get(timeout=0.5) # Get text from queue with timeout
+                                _do_tts(text)
+                            except queue.Empty:
+                                continue # Continue if queue is empty
+                    threading.Thread(target=tts_main_loop, daemon=True).start()
+                self._tts_queue.put(text_to_speak) # Add text to the queue
         elif not self.tts_engine:
-            print(f"TTS (Disabled): '{text_to_speak}'")
+            print(f"TTS (Disabled): '{text_to_speak}'") # Log if TTS engine is not initialized
 
-    # In your process_command_stt method, before NLU:
     def process_command_stt(self, audio_data_bytes):
+        """
+        Processes the captured audio for a command: performs STT, converts spoken numbers,
+        and then performs NLU to get intent and entities.
+        """
         if not audio_data_bytes: return None, False, False
         print("STT: Processing command...")
-        transcribed_text = self.stt_system.recognize_buffer(audio_data_bytes)
+        transcribed_text = self.stt_system.recognize_buffer(audio_data_bytes) # Perform STT
         print(f"STT Result (Command): '{transcribed_text}'")
         if not transcribed_text: return None, False, False
 
-        # Convert spoken numbers to digits for better NLU
+        # Convert spoken numbers (e.g., "one hundred") to digits (e.g., "100")
         transcribed_text = spoken_numbers_to_digits(transcribed_text)
-        # Normalize spaces
+        # Normalize spaces (remove extra spaces)
         transcribed_text = re.sub(r'\s+', ' ', transcribed_text).strip()
-        # Optionally, add a comma for easier GPS extraction
+        # Optionally, add a comma for easier GPS extraction if not already present
         transcribed_text = re.sub(
             r'latitude\s*(-?\d+\.\d+)\s+longitude\s*(-?\d+\.\d+)',
             r'latitude \1, longitude \2',
@@ -1156,23 +1383,31 @@ class LifeguardApp:
         )
         print(f"STT (after num conversion): '{transcribed_text}'")
 
+        # Check for explicit shutdown commands
         if "stop listening" in transcribed_text.lower() or "shutdown system" in transcribed_text.lower():
-            return transcribed_text, False, True
+            return transcribed_text, False, True # Return True for is_stop_command
 
+        # Perform Natural Language Understanding
         self.original_nlu_result_for_execution = self.nlu_system.parse_command(transcribed_text)
         self.command_to_execute_display_text = self.original_nlu_result_for_execution.get("text", transcribed_text)
+        
         needs_confirmation = True
         intent = self.original_nlu_result_for_execution.get("intent")
         confidence = self.original_nlu_result_for_execution.get("confidence", 0.0)
+        # Commands like "select agent" might not need explicit confirmation if confidence is high
         if intent == "SELECT_AGENT" and confidence > 0.85:
             needs_confirmation = False
         return self.command_to_execute_display_text, needs_confirmation, False
 
     def process_yes_no_stt(self, audio_data_bytes):
+        """
+        Processes the captured audio for a simple "yes" or "no" response.
+        """
         if not audio_data_bytes: return "unrecognized"
         print("STT: Processing yes/no...")
-        text_result = self.stt_system.recognize_buffer(audio_data_bytes).lower()
+        text_result = self.stt_system.recognize_buffer(audio_data_bytes).lower() # Perform STT and convert to lowercase
         print(f"STT Result (Yes/No): '{text_result}'")
+        # Simple keyword matching for yes/no
         if "yes" in text_result and "no" not in text_result: return "yes"
         if "no" in text_result and "yes" not in text_result: return "no"
         if "yeah" in text_result or "yep" in text_result: return "yes"
@@ -1180,21 +1415,33 @@ class LifeguardApp:
         return "unrecognized"
 
     def execute_lifeguard_command_wrapper(self):
-        """Wrapper to call actual execution and then signal SM completion."""
+        """
+        Wrapper function for `execute_lifeguard_command` to handle exceptions
+        and ensure the state machine transitions back to idle upon completion.
+        This is designed to be run in a separate thread.
+        """
+        print("DEBUG: Entered execute_lifeguard_command_wrapper")
         try:
-            self.execute_lifeguard_command()
+            self.execute_lifeguard_command() # Call the actual command execution logic
         except Exception as e:
             print(f"Error during command execution: {e}")
+            import traceback
+            traceback.print_exc() # Print full traceback for debugging
             self.speak("An error occurred while executing the command.")
         finally:
-            # Ensure SM transitions back to idle
+            # Ensure state machine transitions back to idle after action, regardless of success/failure
             if self.sm.current_state == self.sm.executing_action:
-                 self.sm.send("event_action_completed")
-
+                self.sm.send("event_action_completed")
 
     def execute_lifeguard_command(self):
+        """
+        Executes the MAVLink command based on the NLU result.
+        This is the core logic for interacting with the uncrewed vehicle.
+        """
+        print("DEBUG: Entered execute_lifeguard_command()")
         nlu_result = self.original_nlu_result_for_execution
         if not nlu_result:
+            print("DEBUG: No NLU result, returning early")
             self.speak("Error: No command data to execute.")
             return
 
@@ -1203,19 +1450,22 @@ class LifeguardApp:
         confidence = nlu_result.get("confidence", 0.0)
         command_text_for_log = nlu_result.get("text", self.command_to_execute_display_text)
 
+        print(f"DEBUG: intent={intent}, confidence={confidence}, entities={entities}")
         print(f"\nNLU Interpretation for Execution: Intent='{intent}', Confidence={confidence:.2f}, Text='{command_text_for_log}'")
         print(f"Entities: {json.dumps(entities, indent=2)}")
 
         active_mav_controller = self._get_active_mav_controller()
         if not active_mav_controller:
+            print("DEBUG: No active MAV controller, returning early")
             self.speak(f"Cannot execute command: Active agent '{self.active_agent_id}' is not available or not connected.")
             return
 
         if intent == "UNKNOWN_INTENT" or confidence < NLU_CONFIDENCE_THRESHOLD:
+            print("DEBUG: Intent unknown or confidence too low, returning early")
             self.speak("Command not understood clearly or intent is unknown. Action cancelled.")
             return
 
-        # Handle SELECT_AGENT intent
+        # Handle SELECT_AGENT intent: change the active agent
         if intent == "SELECT_AGENT":
             new_agent_id = entities.get("selected_agent_id")
             if new_agent_id and new_agent_id in self.mav_controllers:
@@ -1226,41 +1476,45 @@ class LifeguardApp:
                     self.speak(f"Cannot select agent {new_agent_id}, it is not connected.")
             else:
                 self.speak(f"Agent ID {new_agent_id} not recognized or not configured.")
-            return # Action completed for SELECT_AGENT
+            return # Action completed for SELECT_AGENT, no further MAVLink commands needed
 
+        # Extract common parameters for MAVLink commands
         parsed_gps_coords = None
         if "latitude" in entities and "longitude" in entities:
             parsed_gps_coords = {"latitude": entities["latitude"], "longitude": entities["longitude"]}
-        
+        print(f"DEBUG: parsed_gps_coords={parsed_gps_coords}")
+
         target_desc = entities.get("target_description_full")
 
-        # Handle Grid Search
+        # Handle REQUEST_GRID_SEARCH intent
         if intent == "REQUEST_GRID_SEARCH" and parsed_gps_coords and "grid_size_meters" in entities:
+            print("DEBUG: Entering grid search block")
             lat = parsed_gps_coords["latitude"]
             lon = parsed_gps_coords["longitude"]
             grid_size_m = entities["grid_size_meters"]
-            swath_width_m = entities.get("swath_width_meters", DEFAULT_SWATH_WIDTH_M) # Allow NLU override later
-            alt = DEFAULT_WAYPOINT_ALTITUDE
+            swath_width_m = entities.get("swath_width_meters", DEFAULT_SWATH_WIDTH_M) # Use default if not specified
+            alt = DEFAULT_WAYPOINT_ALTITUDE # Use default altitude
 
             action_summary = f"Search a {grid_size_m} meter grid at Latitude={lat:.6f}, Longitude={lon:.6f}, Altitude={alt}m."
             if target_desc: action_summary += f" Looking for: {target_desc}."
             self.speak(f"Executing for {self.active_agent_id}: {action_summary}")
 
+            # Generate and upload the search grid mission
             mission_uploaded = active_mav_controller.generate_and_upload_search_grid_mission(lat, lon, grid_size_m, swath_width_m, alt)
             if mission_uploaded:
                 self.speak("Search grid mission uploaded. Attempting to arm and start.")
-                # Sequence: Arm -> Set Mode AUTO -> Start Mission
+                # Sequence of operations: Arm vehicle -> Set mode to AUTO -> Start mission
                 if active_mav_controller.arm_vehicle():
                     time.sleep(1) # Short delay after arming
-                    if active_mav_controller.set_mode("AUTO"): # Or GUIDED if appropriate for mission start
+                    if active_mav_controller.set_mode("AUTO"): # AUTO mode is required for mission execution
                         time.sleep(1)
                         if active_mav_controller.start_mission():
                             self.speak("Mission started. Vehicle is en route to search area.")
-                            # Send STATUSTEXT after vehicle reaches first WP of the grid (WP 0)
                             if target_desc:
                                 self.speak("Waiting for vehicle to reach search area before sending target details.")
-                                # Assuming the first waypoint of the grid mission is sequence 0
-                                if active_mav_controller.wait_for_waypoint_reached(0, timeout_seconds=180): # Wait up to 3 mins
+                                # Assuming the first waypoint of the grid mission is sequence 0 (the home waypoint)
+                                # Wait for the vehicle to reach the first actual search waypoint (sequence 1)
+                                if active_mav_controller.wait_for_waypoint_reached(1, timeout_seconds=180): # Wait up to 3 mins
                                     active_mav_controller.send_status_text(target_desc, severity=mavutil.mavlink.MAV_SEVERITY_INFO)
                                     self.speak("Target details sent to vehicle.")
                                 else:
@@ -1273,13 +1527,16 @@ class LifeguardApp:
 
         # Handle simple fly to waypoint (can also include target description)
         elif intent in ("COMBINED_SEARCH_AND_TARGET", "REQUEST_SEARCH_AT_LOCATION") and parsed_gps_coords:
+            print("DEBUG: Entering waypoint upload block")
+            print("DEBUG: About to call upload_mission()")
             lat = parsed_gps_coords["latitude"]
             lon = parsed_gps_coords["longitude"]
-            alt = DEFAULT_WAYPOINT_ALTITUDE
+            alt = DEFAULT_WAYPOINT_ALTITUDE # Use default altitude
             action_summary = f"Fly to Latitude={lat:.6f}, Longitude={lon:.6f}, Altitude={alt}m."
             if target_desc: action_summary += f" Search for: {target_desc}."
             self.speak(f"Executing for {self.active_agent_id}: {action_summary}")
 
+            # Prepare single waypoint data for mission upload
             single_wp_data = [
                 (lat, lon, alt,
                  mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
@@ -1289,102 +1546,76 @@ class LifeguardApp:
                  float('nan') # param4 (desired yaw angle at waypoint, NaN for unchanged)
                 )
             ]
-            if active_mav_controller.upload_mission(single_wp_data):
-                self.speak("Waypoint mission uploaded. Attempting to arm and start.")
-                if active_mav_controller.arm_vehicle():
+            print("DEBUG: About to call upload_mission()")
+            try:
+                mission_uploaded = active_mav_controller.upload_mission(single_wp_data)
+            except Exception as e:
+                print(f"Exception during mission upload: {e}")
+                mission_uploaded = False
+            
+            if mission_uploaded:
+                self.speak("Waypoint mission uploaded. Attempting to set mode and arm.")
+                # Set mode to AUTO for missions
+                if active_mav_controller.set_mode("AUTO"):
                     time.sleep(1)
-                    if active_mav_controller.set_mode("AUTO"): # Or GUIDED
+                    if active_mav_controller.arm_vehicle():
                         time.sleep(1)
                         if active_mav_controller.start_mission():
                             self.speak("Mission to waypoint started.")
                             if target_desc: # Send STATUSTEXT after reaching the waypoint
                                 self.speak("Waiting for vehicle to reach waypoint before sending target details.")
-                                if active_mav_controller.wait_for_waypoint_reached(0, timeout_seconds=180):
+                                # Wait for the vehicle to reach the first actual waypoint (sequence 1, after home)
+                                if active_mav_controller.wait_for_waypoint_reached(1, timeout_seconds=180):
                                     active_mav_controller.send_status_text(target_desc, severity=mavutil.mavlink.MAV_SEVERITY_INFO)
                                     self.speak("Target details sent to vehicle.")
                                 else:
                                     self.speak("Failed to confirm vehicle reached waypoint. Target details not sent.")
-                        else: self.speak("Failed to start mission.")
-                    else: self.speak("Failed to set mode.")
-                else: self.speak("Failed to arm vehicle.")
+                        else:
+                            self.speak("Failed to start mission.")
+                    else:
+                        self.speak("Failed to arm vehicle.")
+                else:
+                    self.speak("Failed to set mode.")
             else:
                 self.speak("Failed to upload waypoint mission.")
 
 
-        # Handle providing target description without movement
+        # Handle providing target description without movement command
         elif intent == "PROVIDE_TARGET_DESCRIPTION" and target_desc:
+            print("DEBUG: Entering target description block")
             self.speak(f"Noted target description for {self.active_agent_id}: {target_desc}. Sending to vehicle.")
             if active_mav_controller.send_status_text(target_desc, severity=mavutil.mavlink.MAV_SEVERITY_INFO):
                 self.speak("Target information sent to vehicle.")
             else:
                 self.speak("Failed to send target information to vehicle.")
-        
+            
         else:
+            print("DEBUG: No matching intent block, returning early")
             self.speak("Command understood, but no specific MAVLink action defined for this combination or missing critical info (like GPS).")
 
 
     def initiate_shutdown(self, reason=""):
+        """Initiates the application shutdown process."""
         if self.running_flag:
             print(f"Shutdown initiated: {reason}")
-            self.running_flag = False
+            self.running_flag = False # Set flag to stop main loops
             self.speak("System shutting down.")
-            # The main loop in run() will detect running_flag and call cleanup.
-
-    def run(self):
-        if not self.running_flag:
-            print("Application cannot start due to initialization errors.")
-            self.cleanup()
-            return
-
-        def main_loop():
-            while self.running_flag:
-                if self.is_space_currently_pressed and \
-                   (self.sm.current_state == self.sm.listening_command or \
-                    self.sm.current_state == self.sm.listening_yes_no) and \
-                   self.current_audio_stream and not self.current_audio_stream.is_stopped():
-                    try:
-                        data = self.current_audio_stream.read(AUDIO_READ_CHUNK, exception_on_overflow=False)
-                        self.audio_frames.append(data)
-                    except IOError as e:
-                        print(f"Audio read error: {e}")
-                        self.speak("Microphone error during recording.")
-                        if self.is_space_currently_pressed:
-                            self.is_space_currently_pressed = False
-                            if self.sm.current_state == self.sm.listening_command:
-                                self.sm.event_ptt_stop_command()
-                            elif self.sm.current_state == self.sm.listening_yes_no:
-                                self.sm.event_ptt_stop_yes_no()
-                time.sleep(0.01)
-            print("Exiting main application loop.")
-            self.cleanup()
-
-        # Start main loop in a background thread
-        t = threading.Thread(target=main_loop, daemon=True)
-        t.start()
-
-        self.speak("System initialized.")
-        active_agent_display = f" (Active Agent: {self.active_agent_id})" if self.active_agent_id else ""
-        print(f"\nSystem ready{active_agent_display}. Press and hold SPACE to speak, or ESC to exit.")
-        if self.sm.current_state != self.sm.idle:
-            try:
-                self.sm.send("event_shutdown_requested")
-            except Exception as e:
-                print(f"Error forcing SM to idle: {e}")
-
-        # Run the keyboard listener in the main thread (blocking)
-        self._setup_keyboard_listener()
-
-        # After the keyboard listener exits (ESC pressed), set running_flag to False to stop main_loop
-        self.running_flag = False
-        # Wait for the main loop thread to finish before exiting
-        t.join()
+            # The main loop in run() will detect running_flag change and call cleanup.
 
     def cleanup(self):
+        """Cleans up all initialized resources (audio, MAVLink connections, threads)."""
         print("Cleaning up resources...")
+        # Wait for action thread to finish if it's still running
+        if self.action_thread and self.action_thread.is_alive():
+            print("Waiting for action thread to finish...")
+            self.action_thread.join(timeout=10) # Wait up to 10 seconds for the thread to complete
+        
+        # Stop keyboard listener if active
         if self.keyboard_listener and hasattr(self.keyboard_listener, 'is_alive') and self.keyboard_listener.is_alive():
             self.keyboard_listener.stop()
-            # self.keyboard_listener.join() # Can block
+            # self.keyboard_listener.join() # Joining can block indefinitely if not stopped cleanly
 
+        # Close current audio stream if open
         if self.current_audio_stream:
             try:
                 if self.current_audio_stream.is_active(): self.current_audio_stream.stop_stream()
@@ -1392,25 +1623,39 @@ class LifeguardApp:
             except Exception as e: print(f"Error closing active audio stream: {e}")
         self.current_audio_stream = None
 
+        # Terminate PyAudio instance
         if self.pyaudio_instance:
             self.pyaudio_instance.terminate()
             print("PyAudio terminated.")
 
+        # Close all MAVLink connections
         for agent_id, controller in self.mav_controllers.items():
             if controller:
                 print(f"Closing connection for agent {agent_id}...")
                 controller.close_connection()
-        self.mav_controllers.clear()
+        self.mav_controllers.clear() # Clear the dictionary of controllers
 
         print("System shutdown complete.")
 
 
 if __name__ == "__main__":
-    # vosk.SetLogLevel(-1) # Suppress Vosk logging for cleaner output
-
-    app = LifeguardApp()
+    app = LifeguardApp() # Create an instance of the main application
     try:
         if app.running_flag: # Only run if initialization was successful
+            # Optional: Upload a test mission ONCE at startup for validation
+            # controller = app._get_active_mav_controller()
+            # if controller:
+            #     print("DEBUG: Uploading test mission at startup")
+            #     controller.set_mode("GUIDED")
+            #     controller.upload_mission([
+            #         (41.37, -72.09, 30.0,
+            #          mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+            #          0.0, 10.0, 0.0, float('nan')),
+            #         (41.38, -72.10, 30.0,
+            #          mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+            #          0.0, 10.0, 0.0, float('nan'))
+            #     ])
+            # Now start the main voice-driven loop
             app.run()
         else:
             print("Application did not start due to initialization failures.")
@@ -1423,16 +1668,14 @@ if __name__ == "__main__":
         traceback.print_exc()
         app.initiate_shutdown(f"Unexpected error: {e}")
     finally:
-        # Ensure cleanup is called if run() exits or if init failed but app object exists
-        # The run() method itself calls cleanup on exit. This is a fallback.
-        if hasattr(app, 'running_flag') and app.running_flag: # If shutdown wasn't called from within run's try/except
-             app.cleanup() # This might be redundant if run() completed its cleanup
-        elif not hasattr(app, 'running_flag'): # App object might not be fully initialized
+        # Ensure cleanup is called even if an error occurs during initialization or main run
+        if hasattr(app, 'running_flag') and app.running_flag:
+            app.cleanup()
+        elif not hasattr(app, 'running_flag'):
+            # Special case for very early exit before `running_flag` is set or `cleanup` is fully initialized
             print("Cleanup called due to early exit or incomplete initialization.")
-            # Attempt minimal cleanup if app object is partially formed
             if hasattr(app, 'pyaudio_instance') and app.pyaudio_instance: app.pyaudio_instance.terminate()
             if hasattr(app, 'mav_controllers'):
                 for controller in app.mav_controllers.values():
                     if controller: controller.close_connection()
-
     print("Application has terminated.")
