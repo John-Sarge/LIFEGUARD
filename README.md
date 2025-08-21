@@ -2,7 +2,7 @@
 
 # LIFEGUARD
 
-**Lightweight Intent-Focused Engine for Guidance in Unmarried Autonomous Rescue Deployments**
+**Lightweight Intent-Focused Engine for Guidance in Unmanned Autonomous Rescue Deployments**
 
 > LIFEGUARD enables operators to naturally and effectively pass Commander’s Intent to autonomous units, bridging voice commands and machine action for efficient, reliable, and intuitive search and rescue deployments.
 
