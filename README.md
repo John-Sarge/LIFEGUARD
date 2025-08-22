@@ -1,4 +1,6 @@
-![Lifeguard](https://github.com/user-attachments/assets/144d6ab6-ae71-4783-b9d1-0b1ada70befc)
+<p align="center">
+  <img width="800" height="802" alt="LIFEGUARD_github_logo" src="https://github.com/user-attachments/assets/068ae446-1a9b-40af-93cb-5b18b39b2531" />
+</p>
 
 # LIFEGUARD
 
