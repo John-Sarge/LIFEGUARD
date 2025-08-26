@@ -73,6 +73,11 @@ AGENT_CONNECTION_CONFIGS = {
         "connection_string": 'tcp:10.24.5.232:5762',
         "source_system_id": MAVLINK_SOURCE_SYSTEM_ID,
         "baudrate": MAVLINK_BAUDRATE
+    },
+    "agent2": {
+        "connection_string": 'tcp:127.0.0.1:5762',
+        "source_system_id": MAVLINK_SOURCE_SYSTEM_ID,
+        "baudrate": MAVLINK_BAUDRATE
     }
 }
 INITIAL_ACTIVE_AGENT_ID = "agent1"
@@ -470,6 +475,28 @@ class NaturalLanguageUnderstanding:
 # MAVLink subsystem: Handles drone connection, mission upload, and vehicle control.
 
 class MavlinkController:
+    def send_target_to_vehicle(self, target):
+        # Send target info to vehicle using STATUSTEXT
+        msg = f"TARGET:{target}"
+        self.send_status_text(msg)
+
+    def listen_for_found_message(self, timeout=180):
+        # Listen for FOUND message from vehicle, return (lat, lon) if found
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            msg = self.master.recv_match(type='STATUSTEXT', blocking=True, timeout=2)
+            if msg is not None:
+                try:
+                    text = msg.text.decode() if hasattr(msg.text, 'decode') else msg.text
+                    if text.startswith('FOUND:'):
+                        coords = text.split(':')[1].split(',')
+                        lat, lon = float(coords[0]), float(coords[1])
+                        print(f"Received FOUND message: lat={lat}, lon={lon}")
+                        return lat, lon
+                except Exception as e:
+                    print(f"Error parsing FOUND message: {e}")
+        print("Timeout waiting for FOUND message.")
+        return None, None
     # Controls a single drone via MAVLink, including mission upload and mode changes.
     def __init__(self, connection_string, baudrate=None, source_system_id=255):
         self.connection_string = connection_string
@@ -1186,8 +1213,49 @@ class MavlinkWorker(WorkerThread):
                             if msg.target_desc:
                                 self._speak("Waiting to reach area before sending target details.")
                                 if ctrl.wait_for_waypoint_reached(1, timeout_seconds=180):
-                                    ctrl.send_status_text(msg.target_desc)
+                                    ctrl.send_target_to_vehicle(msg.target_desc)
                                     self._speak("Target details sent.")
+                                    # Listen for FOUND message and trigger agent2
+                                    lat, lon = ctrl.listen_for_found_message(timeout=180)
+                                    if lat is not None and lon is not None:
+                                        self._speak(f"Target found at {lat:.6f}, {lon:.6f}. Dispatching verification agents with exclusion zone.")
+                                        import threading
+                                        # Exclusion zone: center is the search agent's current position, radius is configurable
+                                        exclusion_center = (lat, lon)
+                                        exclusion_radius = 10.0  # meters (adjust as needed)
+                                        exclusion_msg = f"EXCLUSION:{exclusion_center[0]:.6f},{exclusion_center[1]:.6f},{exclusion_radius:.1f}"
+
+                                        def dispatch_agent(agent_id, ctrl, lat, lon, exclusion_msg):
+                                            # Send exclusion zone to agent
+                                            ctrl.send_status_text(exclusion_msg)
+                                            wp = [
+                                                (lat, lon, DEFAULT_WAYPOINT_ALTITUDE,
+                                                 mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0.0, 10.0, 0.0, float('nan'))
+                                            ]
+                                            ok = ctrl.upload_mission(wp)
+                                            if ok:
+                                                self._speak(f"{agent_id} mission uploaded. Arming and starting mission.")
+                                                if ctrl.arm_vehicle():
+                                                    time.sleep(1)
+                                                    if ctrl.set_mode("AUTO"):
+                                                        time.sleep(1)
+                                                        if ctrl.start_mission():
+                                                            self._speak(f"{agent_id} dispatched to verify target.")
+                                                        else:
+                                                            self._speak(f"{agent_id} failed to start mission.")
+                                                    else:
+                                                        self._speak(f"{agent_id} failed to set AUTO mode.")
+                                                else:
+                                                    self._speak(f"{agent_id} failed to arm vehicle.")
+                                            else:
+                                                self._speak(f"Failed to upload mission to {agent_id}.")
+
+                                        active_id = self.active_agent_id
+                                        for agent_id, ctrl in self.controllers.items():
+                                            if agent_id != active_id and ctrl.is_connected():
+                                                threading.Thread(target=dispatch_agent, args=(agent_id, ctrl, lat, lon, exclusion_msg), daemon=True).start()
+                                    else:
+                                        self._speak("No FOUND message received from vehicle.")
                                 else:
                                     self._speak("Timeout waiting for area. Target details not sent.")
                         else:
