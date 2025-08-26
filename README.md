@@ -71,8 +71,8 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 
 | Voice Command Example | Extracted Intent | Key Entities Extracted |
 | :--------------------------------------------------------------------------- | :------------------ | :------------------------------------------------------------- |
-| "Search a **100 meter** grid at latitude **41.37** longitude **-72.09**." | `GRID_SEARCH` | `GRID_SIZE: 100`, `LATITUDE: 41.37`, `LONGITUDE: -72.09` |
-| "Search at latitude **41.37** longitude **-72.09** for a person in a life ring." | `WAYPOINT_SEARCH` | `LATITUDE: 41.37`, `LONGITUDE: -72.09`, `TARGET: person in a life ring` |
+| "Search a **100 meter** grid at latitude **38.99** longitude **-76.48**." | `GRID_SEARCH` | `GRID_SIZE: 100`, `LATITUDE: 41.37`, `LONGITUDE: -72.09` |
+| "Search at latitude **38.99** longitude **-76.48** for a person in a life ring." | `WAYPOINT_SEARCH` | `LATITUDE: 41.37`, `LONGITUDE: -72.09`, `TARGET: person in a life ring` |
 | "Select **drone two**." | `SELECT_AGENT` | `AGENT_ID: 2` |
 | "Set altitude to **fifty meters**." | `SET_ALTITUDE` | `ALTITUDE: 50` |
 | "Confirm command." / "Yes." | `CONFIRM_ACTION` | `CONFIRMATION: True` |
