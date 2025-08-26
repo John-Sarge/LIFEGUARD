@@ -25,25 +25,26 @@ LIFEGUARD is a Python-based system that interprets spoken natural language comma
   - **Audio Preprocessing:** Employs noise reduction and band-pass filtering for reliable command recognition in noisy field environments.
   - **Interactive Confirmation:** A critical safety feature that prompts the operator for confirmation before dispatching commands to autonomous units.
   - **Push-to-Talk (PTT):** Uses the spacebar as a push-to-talk trigger to prevent accidental activation, with ESC for a clean system shutdown.
-  - **Robust State Machine:** Ensures reliable state transitions and error handling throughout the command lifecycle.
+  - **Decoupled Subsystems:** Audio Input/PTT, STT, NLU, MAVLink I/O, and TTS Output run in dedicated threads and communicate via thread-safe queues for improved reliability and responsiveness.
+  - **Modular Message-Passing Architecture:** Improves reliability, thread safety, and responsiveness for mission-critical operations.
   - **Cross-Platform:** Works on both Windows and Linux operating systems.
 
 -----
 
 ## System Architecture and Operational Flow
 
-The LIFEGUARD system follows a multi-stage pipeline designed for safety and accuracy, transforming a spoken utterance into a verified command for an autonomous agent.
+The LIFEGUARD system uses a decoupled, multi-threaded message-passing architecture. Subsystems (Audio Input/PTT, STT, NLU, MAVLink I/O, TTS Output) run in dedicated threads and communicate via thread-safe queues. This design improves reliability, thread safety, and responsiveness for mission-critical operations.
 
 ### Operational Workflow
 
 1.  **Push-to-Talk:** The operator presses and holds the spacebar to begin recording a command. The system only listens while this key is held.
-2.  **Audio Preprocessing:** The captured audio is immediately processed to remove background noise and is filtered to isolate the frequency range of human speech, significantly improving recognition accuracy.
+2.  **Audio Preprocessing:** The captured audio is processed for noise reduction and bandpass filtering to isolate speech frequencies.
 3.  **Speech Recognition:** The cleaned audio is transcribed into text in real-time by the offline Vosk STT engine.
-4.  **Intent Extraction:** A custom-trained spaCy NLU model parses the transcribed text to identify the core intent (e.g., `GRID_SEARCH`) and extract key entities, including converting spoken numbers to digits (e.g., "forty one point three seven" → 41.37).
-5.  **Agent Selection:** If the command includes an agent directive (e.g., "select drone two"), the system switches its active MAVLink connection. The currently selected agent is retained for subsequent commands.
-6.  **Command Translation:** A valid intent is mapped to a sequence of MAVLink commands. For example, a `GRID_SEARCH` intent is translated into a complete mission plan with calculated waypoints.
-7.  **User Confirmation:** The system verbalizes its interpretation of the command and asks the operator for confirmation (e.g., "Confirm grid search at latitude 41.37, longitude -72.09. Say yes or no."). This is the final safeguard against misinterpretation.
-8.  **Action Execution:** Upon receiving a "yes" confirmation, the MAVLink commands are sent to the selected autonomous unit for execution.
+4.  **Intent Extraction:** spaCy NLU parses the transcribed text to identify intent and extract entities, including spoken number conversion.
+5.  **Agent Selection:** Voice commands can select the active MAVLink agent (drone/robot). The selected agent is retained for subsequent commands.
+6.  **Command Translation:** Valid intents are mapped to MAVLink commands (e.g., grid search mission upload).
+7.  **User Confirmation:** The system verbalizes its interpretation and asks for confirmation before executing safety-critical actions.
+8.  **Action Execution:** Upon confirmation, commands are sent to the selected autonomous unit for execution.
 
 ### Technology Stack
 
@@ -56,7 +57,7 @@ The system is built on a foundation of powerful, open-source libraries chosen fo
 | **pymavlink** | MAVLink Protocol Communication with Autonomous Units |
 | **noisereduce** | Real-time Audio Noise Reduction |
 | **pynput** | Keyboard Event Handling (Push-to-Talk & Shutdown) |
-| **python-statemachine** | Manages Application State (Listening, Confirming, etc.) |
+| **Threading/Queues** | Decoupled subsystem communication and message routing |
 | **PyAudio** | Microphone Audio Input Stream |
 | **scipy, numpy** | Signal Processing & Numerical Operations |
 | **pyttsx3, word2number** | Text-to-Speech (for confirmation) & Number Conversion |
@@ -84,14 +85,13 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 
 ### Minimum Requirements
 
-  - Python 3.7+
+  - Python 3.8+
   - [Vosk](https://alphacephei.com/vosk/) version 0.3.45 (STT engine and English model)
   - [spaCy](https://spacy.io/) version 3.0.0 with `en_core_web_sm` model
   - [PyAudio](https://people.csail.mit.edu/hubert/pyaudio/) (microphone input)
   - [noisereduce](https://github.com/timsainb/noisereduce)
   - [pymavlink](https://github.com/ArduPilot/pymavlink)
-  - [lat\_lon\_parser](https://pypi.org/project/lat-lon-parser/)
-  - numpy, scipy, pynput, pyttsx3, statemachine, word2number
+  - numpy, scipy, pynput, pyttsx3, word2number
 
 ### Installation Steps
 
@@ -153,11 +153,11 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 
 2.  **Run the Application**
 
-    ```bash
-    python lifeguard.py
-    ```
+  ```bash
+  python lifeguard.py
+  ```
 
-    The system will initialize and indicate that it is "Listening for commands...".
+  The system will initialize and indicate that it is ready for voice commands.
 
 3.  **Issue a Voice Command**
 
@@ -184,7 +184,7 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 The system is designed to be modular and extensible.
 
   - **Add New Commands:** Extend the NLU entity patterns and intent-handling logic in `lifeguard.py` to support new command types (e.g., "return to launch," "follow target").
-  - **Configure Agents:** Modify the `AGENT_CONNECTION_CONFIGS` dictionary to add, remove, or update connection strings for different autonomous vehicles.
+  - **Configure Agents:** Modify the `AGENT_CONNECTION_CONFIGS` dictionary in `lifeguard.py` to add, remove, or update connection strings for different autonomous vehicles.
   - **Tune Parameters:** Adjust grid search parameters, default flight altitudes, and audio processing settings within the main script to match specific operational requirements.
 
 -----
