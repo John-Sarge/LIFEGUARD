@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="800" height="802" alt="LIFEGUARD_github_logo" src="https://github.com/user-attachments/assets/068ae446-1a9b-40af-93cb-5b18b39b2531" />
+  <img width="400" alt="LIFEGUARD_github_logo" src="https://github.com/user-attachments/assets/068ae446-1a9b-40af-93cb-5b18b39b2531" />
 </p>
 
 # LIFEGUARD
