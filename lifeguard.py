@@ -1,4 +1,8 @@
-# Lifeguard Refactored System
+# LIFEGUARD: Lightweight Intent-Focused Engine for Guidance in Unmanned Autonomous Rescue Deployments
+
+# LIFEGUARD enables operators to naturally and effectively pass Command Intent to autonomous units,
+# bridging voice commands and machine action for efficient, reliable, and intuitive search and rescue deployments.
+
 # This file implements a decoupled, message-passing architecture for a search-and-rescue drone system.
 # Subsystems (Audio Input/PTT, STT, NLU, MAVLink I/O, TTS Output) run in dedicated threads and communicate via thread-safe queues.
 # This design improves reliability, thread safety, and responsiveness for mission-critical operations.
@@ -74,8 +78,10 @@ AGENT_CONNECTION_CONFIGS = {
         "source_system_id": MAVLINK_SOURCE_SYSTEM_ID,
         "baudrate": MAVLINK_BAUDRATE
     },
+    # Placeholder for a second verification agent. Update connection_string to your agent2 endpoint.
+    # Example: SITL instance 2 often uses the next TCP port (5763)
     "agent2": {
-        "connection_string": 'tcp:127.0.0.1:5762',
+        "connection_string": 'tcp:10.24.5.232:5772',  # TODO: confirm/update
         "source_system_id": MAVLINK_SOURCE_SYSTEM_ID,
         "baudrate": MAVLINK_BAUDRATE
     }
@@ -169,7 +175,7 @@ class SpeechToText:
         self.model = vosk.Model(model_path)
         self.recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
         self.recognizer.SetWords(True)
-        # streaming state
+        # Streaming recognizer instance (created per utterance)
         self._streaming_recognizer = None
 
     def recognize_buffer(self, raw_audio_buffer_bytes) -> str:
@@ -195,7 +201,6 @@ class SpeechToText:
     # Streaming API: create new recognizer state for a new utterance
     def start_utterance(self):
         # Start a new streaming utterance (for chunked audio input).
-        # create a fresh recognizer for streaming
         self._streaming_recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
         self._streaming_recognizer.SetWords(True)
 
@@ -269,8 +274,8 @@ class SpeechToText:
 # =========================
 # Natural Language Understanding subsystem: Extracts intent and entities from transcribed text.
 
+# spaCy custom entity recognizer for latitude/longitude patterns in text.
 @Language.factory("lat_lon_entity_recognizer", default_config={"gps_label": "LOCATION_GPS_COMPLEX"})
-    # spaCy custom entity recognizer for latitude/longitude patterns in text.
 def create_lat_lon_entity_recognizer(nlp: Language, name: str, gps_label: str):
     return LatLonEntityRecognizer(nlp, gps_label)
 
@@ -340,7 +345,7 @@ class LatLonEntityRecognizer:
         return doc
 
 class NaturalLanguageUnderstanding:
-    # Main NLU class: loads spaCy, adds custom entity rules, and parses commands for intent/entities.
+    # Loads spaCy, adds custom entity rules, and parses commands into intent/entities.
     def __init__(self, spacy_model_name):
         try:
             self.nlp = spacy.load(spacy_model_name)
@@ -370,7 +375,8 @@ class NaturalLanguageUnderstanding:
             ruler.add_patterns(sar_patterns)
 
     def parse_command(self, text):
-        # Parse a command string and extract intent, confidence, and entities.
+    # Parse a command string and extract intent, confidence, and entities.
+    # Also normalizes a few common patterns (e.g., grid size heuristics) from raw text.
         doc = self.nlp(text)
         intent = "UNKNOWN_INTENT"
         entities_payload = {}
@@ -475,28 +481,6 @@ class NaturalLanguageUnderstanding:
 # MAVLink subsystem: Handles drone connection, mission upload, and vehicle control.
 
 class MavlinkController:
-    def send_target_to_vehicle(self, target):
-        # Send target info to vehicle using STATUSTEXT
-        msg = f"TARGET:{target}"
-        self.send_status_text(msg)
-
-    def listen_for_found_message(self, timeout=180):
-        # Listen for FOUND message from vehicle, return (lat, lon) if found
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            msg = self.master.recv_match(type='STATUSTEXT', blocking=True, timeout=2)
-            if msg is not None:
-                try:
-                    text = msg.text.decode() if hasattr(msg.text, 'decode') else msg.text
-                    if text.startswith('FOUND:'):
-                        coords = text.split(':')[1].split(',')
-                        lat, lon = float(coords[0]), float(coords[1])
-                        print(f"Received FOUND message: lat={lat}, lon={lon}")
-                        return lat, lon
-                except Exception as e:
-                    print(f"Error parsing FOUND message: {e}")
-        print("Timeout waiting for FOUND message.")
-        return None, None
     # Controls a single drone via MAVLink, including mission upload and mode changes.
     def __init__(self, connection_string, baudrate=None, source_system_id=255):
         self.connection_string = connection_string
@@ -542,7 +526,8 @@ class MavlinkController:
         return self.master is not None
 
     def upload_mission(self, waypoints_data):
-        # Upload a list of waypoints as a mission to the drone.
+    # Upload a list of waypoints as a mission to the drone.
+    # Accepts a sequence of tuples shaped like (lat, lon, alt, cmd, p1, p2, p3, p4 [, frame, is_current, autocontinue]).
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot upload mission.")
             return False
@@ -693,7 +678,7 @@ class MavlinkController:
             print(f"MAVLink: Connection closed for {self.connection_string}.")
 
     def _calculate_rectangular_grid_waypoints(self, center_lat, center_lon, grid_width_m, grid_height_m, swath_width_m, altitude_m):
-        # Generate a rectangular grid of waypoints for search patterns.
+    # Generate a rectangular grid of waypoints for search patterns (lawnmower pattern).
         waypoints = []
         if swath_width_m <= 0 or grid_width_m <= 0 or grid_height_m <= 0:
             return waypoints
@@ -857,7 +842,7 @@ class WorkerThread:
 # =========================
 
 class TTSWorker(WorkerThread):
-    # Text-to-Speech worker: speaks messages using pyttsx3.
+    # Text-to-Speech worker: speaks messages using pyttsx3 (falls back to console logs if unavailable).
     def __init__(self, inbox: queue.Queue):
         super().__init__("TTSWorker", inbox)
         self._engine = None
@@ -897,7 +882,7 @@ class AudioInputWorker(WorkerThread):
     def __init__(self, inbox: queue.Queue, stt_out: queue.Queue, coord_out: Optional[queue.Queue] = None):
         super().__init__("AudioInputWorker", inbox)
         self.stt_out = stt_out
-        # coordinator output queue for system-level messages (e.g., ESC -> shutdown)
+        # Coordinator output queue for system-level messages (e.g., ESC -> shutdown)
         self.coord_out = coord_out
         self._pyaudio = None
         self._stream = None
@@ -950,7 +935,7 @@ class AudioInputWorker(WorkerThread):
             self._stream = None
 
     def _stop_recording_and_emit(self):
-        # Stop recording and emit final audio marker to STT worker.
+    # Stop recording and emit a zero-length final marker to signal end-of-utterance to STT.
         if self._stream:
             try:
                 if self._stream.is_active():
@@ -962,8 +947,7 @@ class AudioInputWorker(WorkerThread):
         data = b''.join(self._frames)
         self._frames = []
         if data:
-            # We've already streamed chunks during recording. Send an empty final marker
-            # to indicate end-of-utterance without duplicating audio to the STT service.
+            # Chunks have already been streamed; only send a final marker so STT finalizes.
             try:
                 self.stt_out.put(MsgAudioData(data=b'', mode=self._mode, final=True))
                 print(f"[Audio] Emitted final AudioData marker ({self._mode}).")
@@ -974,7 +958,7 @@ class AudioInputWorker(WorkerThread):
             print("[Audio] No audio captured.")
 
     def run(self):
-        # Main loop: handle audio capture and control messages.
+    # Main loop: handle audio capture and control messages.
         self._pyaudio = pyaudio.PyAudio()
         print("Audio/PTT: Press and hold SPACE to speak, ESC to exit.")
         self._keyboard_listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
@@ -986,7 +970,7 @@ class AudioInputWorker(WorkerThread):
                     try:
                         data = self._stream.read(AUDIO_READ_CHUNK, exception_on_overflow=False)
                         self._frames.append(data)
-                        # emit streaming chunk to STT worker (non-final)
+            # Emit streaming chunk to STT worker (non-final)
                         try:
                             self.stt_out.put(MsgAudioData(data=data, mode=self._mode, final=False))
                         except Exception:
@@ -1040,7 +1024,7 @@ class STTWorker(WorkerThread):
         except Exception as e:
             print(f"[STT] Initialization failed: {e}")
             self.stt = None
-        # Streaming mode: process chunked audio messages
+    # Streaming mode: process chunked audio messages
         current_mode = None
         streaming_active = False
         while not self.stopped():
@@ -1052,7 +1036,7 @@ class STTWorker(WorkerThread):
                 break
             if isinstance(msg, MsgAudioData):
                 if not self.stt:
-                    # send empty result so coordinator can react
+                    # Send empty result so coordinator can react (e.g., speak error)
                     self.coord_out.put(MsgSTTResult(text="", mode=msg.mode))
                     continue
                 # If starting a new utterance
@@ -1066,7 +1050,7 @@ class STTWorker(WorkerThread):
                 # Feed chunk
                 try:
                     partial = self.stt.accept_waveform(msg.data)
-                    # Optionally we could emit partials here; for now we only emit final
+                    # Partial results are available but we only emit final results for simplicity.
                 except Exception:
                     partial = None
                 # If final chunk, finalize and emit
@@ -1151,8 +1135,8 @@ class MavlinkWorker(WorkerThread):
         return None
 
     def run(self):
-        # Main loop: process MAVLink commands and manage drone state.
-        # Initialize controllers
+    # Main loop: process MAVLink commands and manage drone state.
+    # Initialize controllers and select an active agent.
         if not AGENT_CONNECTION_CONFIGS:
             self._speak("Fatal error: No MAVLink agents configured.")
             return
@@ -1173,10 +1157,103 @@ class MavlinkWorker(WorkerThread):
         self.active_agent_id = candidate_active if candidate_active in self.controllers else next(iter(self.controllers))
         self._speak(f"Active agent: {self.active_agent_id}")
 
+        def _decode_statustext(msg) -> str:
+            try:
+                raw = msg.text
+                return raw.decode() if hasattr(raw, 'decode') else str(raw)
+            except Exception:
+                return ""
+
+        def _parse_found(text: str):
+            # Parse FOUND messages in format: FOUND:<lat>,<lon>
+            if not text:
+                return None
+            s = text.strip()
+            if not s.upper().startswith("FOUND:"):
+                return None
+            try:
+                payload = s.split(":", 1)[1].strip()
+                parts = [p.strip() for p in payload.split(",")]
+                if len(parts) != 2:
+                    return None
+                lat = float(parts[0]); lon = float(parts[1])
+                if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                    return None
+                return lat, lon
+            except Exception:
+                return None
+
+        def _poll_statustext_all():
+            # Non-blocking poll across all controllers for STATUSTEXT messages and react to FOUND reports.
+            for aid, c in self.controllers.items():
+                try:
+                    # Drain a couple of STATUSTEXT messages per loop to avoid starvation.
+                    for _ in range(3):
+                        msg = c.master.recv_match(type='STATUSTEXT', blocking=False)
+                        if not msg:
+                            break
+                        text = _decode_statustext(msg)
+                        if not text:
+                            continue
+                        # Log for visibility
+                        print(f"[MAV:{aid}] STATUSTEXT: {text}")
+                        found = _parse_found(text)
+                        if found:
+                            _handle_found(aid, found[0], found[1])
+                except Exception:
+                    # Ignore transient errors while polling
+                    pass
+
+        def _handle_found(source_agent_id: str, lat: float, lon: float):
+            # When a source agent reports a found target, dispatch another available agent (if any) to verify.
+            self._speak(f"Agent {source_agent_id} reported a target at {lat:.6f}, {lon:.6f}.")
+
+            # === MODIFICATION START ===
+            # Find the first available agent that is NOT the source agent
+            verify_agent_id = None
+            for agent_id, controller in self.controllers.items():
+                if agent_id != source_agent_id and controller and controller.is_connected():
+                    verify_agent_id = agent_id
+                    break  # Found a suitable verifier, stop looking
+            # === MODIFICATION END ===
+
+            if not verify_agent_id:
+                self._speak("No other agents are available to verify.")
+                return
+
+            verifier = self.controllers.get(verify_agent_id)
+            self._speak(f"Dispatching {verify_agent_id} to verify.")
+            try:
+                # Upload a simple fly-to mission to the reported location
+                wp = [
+                    (lat, lon, DEFAULT_WAYPOINT_ALTITUDE,
+                     mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0.0, 10.0, 0.0, float('nan'))
+                ]
+                ok = verifier.upload_mission(wp)
+                if not ok:
+                    self._speak(f"Failed to upload verification waypoint to {verify_agent_id}.")
+                    return
+                if verifier.set_mode("AUTO"):
+                    time.sleep(1)
+                    if verifier.arm_vehicle():
+                        time.sleep(1)
+                        if verifier.start_mission():
+                            self._speak(f"{verify_agent_id} dispatched to verify target location.")
+                        else:
+                            self._speak(f"{verify_agent_id} failed to start mission.")
+                    else:
+                        self._speak(f"{verify_agent_id} failed to arm.")
+                else:
+                    self._speak(f"{verify_agent_id} failed to set AUTO mode.")
+            except Exception as e:
+                print(f"[MAV] Verification dispatch error: {e}")
+
         while not self.stopped():
             try:
                 msg = self.inbox.get(timeout=0.2)
             except queue.Empty:
+                # Even if there are no incoming commands, poll for STATUSTEXT updates.
+                _poll_statustext_all()
                 continue
             if isinstance(msg, MsgShutdown):
                 break
@@ -1213,49 +1290,8 @@ class MavlinkWorker(WorkerThread):
                             if msg.target_desc:
                                 self._speak("Waiting to reach area before sending target details.")
                                 if ctrl.wait_for_waypoint_reached(1, timeout_seconds=180):
-                                    ctrl.send_target_to_vehicle(msg.target_desc)
+                                    ctrl.send_status_text(f"TARGET:{msg.target_desc}")
                                     self._speak("Target details sent.")
-                                    # Listen for FOUND message and trigger agent2
-                                    lat, lon = ctrl.listen_for_found_message(timeout=180)
-                                    if lat is not None and lon is not None:
-                                        self._speak(f"Target found at {lat:.6f}, {lon:.6f}. Dispatching verification agents with exclusion zone.")
-                                        import threading
-                                        # Exclusion zone: center is the search agent's current position, radius is configurable
-                                        exclusion_center = (lat, lon)
-                                        exclusion_radius = 10.0  # meters (adjust as needed)
-                                        exclusion_msg = f"EXCLUSION:{exclusion_center[0]:.6f},{exclusion_center[1]:.6f},{exclusion_radius:.1f}"
-
-                                        def dispatch_agent(agent_id, ctrl, lat, lon, exclusion_msg):
-                                            # Send exclusion zone to agent
-                                            ctrl.send_status_text(exclusion_msg)
-                                            wp = [
-                                                (lat, lon, DEFAULT_WAYPOINT_ALTITUDE,
-                                                 mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0.0, 10.0, 0.0, float('nan'))
-                                            ]
-                                            ok = ctrl.upload_mission(wp)
-                                            if ok:
-                                                self._speak(f"{agent_id} mission uploaded. Arming and starting mission.")
-                                                if ctrl.arm_vehicle():
-                                                    time.sleep(1)
-                                                    if ctrl.set_mode("AUTO"):
-                                                        time.sleep(1)
-                                                        if ctrl.start_mission():
-                                                            self._speak(f"{agent_id} dispatched to verify target.")
-                                                        else:
-                                                            self._speak(f"{agent_id} failed to start mission.")
-                                                    else:
-                                                        self._speak(f"{agent_id} failed to set AUTO mode.")
-                                                else:
-                                                    self._speak(f"{agent_id} failed to arm vehicle.")
-                                            else:
-                                                self._speak(f"Failed to upload mission to {agent_id}.")
-
-                                        active_id = self.active_agent_id
-                                        for agent_id, ctrl in self.controllers.items():
-                                            if agent_id != active_id and ctrl.is_connected():
-                                                threading.Thread(target=dispatch_agent, args=(agent_id, ctrl, lat, lon, exclusion_msg), daemon=True).start()
-                                    else:
-                                        self._speak("No FOUND message received from vehicle.")
                                 else:
                                     self._speak("Timeout waiting for area. Target details not sent.")
                         else:
@@ -1283,7 +1319,7 @@ class MavlinkWorker(WorkerThread):
                             if msg.target_desc:
                                 self._speak("Waiting to reach waypoint before sending target details.")
                                 if ctrl.wait_for_waypoint_reached(1, timeout_seconds=180):
-                                    ctrl.send_status_text(msg.target_desc)
+                                    ctrl.send_status_text(f"TARGET:{msg.target_desc}")
                                     self._speak("Target details sent.")
                                 else:
                                     self._speak("Failed to confirm waypoint reached.")
@@ -1293,6 +1329,8 @@ class MavlinkWorker(WorkerThread):
                         self._speak("Failed to arm vehicle.")
                 else:
                     self._speak("Failed to set AUTO mode.")
+            # After processing any command/action, poll for incoming STATUSTEXT updates.
+            _poll_statustext_all()
         # Cleanup: try to put vehicles into GUIDED mode for a safer operator handoff,
         # then close the MAVLink connections.
         for aid, ctrl in self.controllers.items():
@@ -1317,7 +1355,6 @@ class MavlinkWorker(WorkerThread):
         print("[MAV] Worker stopped.")
 
     def attempt_set_guided_all(self):
-        # Synchronously set all connected drones to GUIDED mode (safe shutdown).
         """Synchronous attempt to set all connected controllers to GUIDED mode.
         This is intended to be called from the main thread during shutdown so
         we don't depend on the worker thread being scheduled to perform the mode change."""
@@ -1341,7 +1378,7 @@ class MavlinkWorker(WorkerThread):
 # =========================
 
 class Coordinator(WorkerThread):
-    # Coordinator worker: central controller for message routing and system state.
+    # Coordinator worker: routes messages and maintains simple conversation state (e.g., confirmations).
     def __init__(self,
                  inbox: queue.Queue,
                  audio_ctrl_out: queue.Queue,
@@ -1357,22 +1394,22 @@ class Coordinator(WorkerThread):
         self.pending_nlu: Optional[MsgNLUResult] = None
 
     def _speak(self, text: str):
-        # Send a message to the TTS worker.
+    # Enqueue a message for the TTS worker.
         self.tts_outbox.put(MsgSpeak(text=text))
 
     def _set_capture_mode(self, mode: CaptureMode):
-        # Set the audio capture mode (COMMAND or YESNO).
+    # Switch the audio capture mode (COMMAND or YESNO) in the audio worker.
         self.audio_ctrl_out.put(MsgSetCaptureMode(mode=mode))
 
     def _requires_confirmation(self, nlu: MsgNLUResult) -> bool:
-        # Determine if a command requires operator confirmation before execution.
-        # Confirmation can be skipped for SELECT_AGENT if very confident
+    # Determine if a command requires operator confirmation before execution.
+    # Skip confirmation for SELECT_AGENT if confidence is high.
         if nlu.intent == "SELECT_AGENT" and nlu.confidence > 0.85:
             return False
         return True
 
     def _handle_intent(self, nlu: MsgNLUResult):
-        # Handle parsed intent and route commands to appropriate subsystems.
+    # Handle parsed intent and route commands to appropriate subsystems.
         intent = nlu.intent
         entities = nlu.entities or {}
         conf = nlu.confidence or 0.0
@@ -1414,18 +1451,14 @@ class Coordinator(WorkerThread):
             ))
             return
         if intent == "PROVIDE_TARGET_DESCRIPTION" and target_desc:
-            # No immediate MAV action; send STATUSTEXT via MAV worker as a simple flyless command
+            # Not wired to send STATUSTEXT directly yet; acknowledge verbally for now.
             self._speak(f"Target: {target_desc}. Sending to vehicle.")
-            # Reuse status text path by a minimal mission: better add a dedicated message if needed.
-            # For now, we can piggyback: send as a zero-distance waypoint mission? Simpler: ask MAV worker
-            # to send status text by extending protocol — not implemented in this minimal refactor.
-            # Fallback: speak only.
             return
 
         self._speak("Command understood, but no specific action defined or missing GPS.")
 
     def _normalize_transcribed(self, text: str) -> str:
-        # Normalize transcribed text (convert spoken numbers, clean whitespace, format GPS).
+    # Normalize transcribed text (convert spoken numbers, clean whitespace, tidy GPS format).
         if not text:
             return ""
         text = spoken_numbers_to_digits(text)
@@ -1435,8 +1468,8 @@ class Coordinator(WorkerThread):
         return text
 
     def run(self):
-        # Main loop: process system messages and coordinate subsystem actions.
-        # Initial capture mode
+    # Main loop: process system messages and coordinate subsystem actions.
+    # Set initial capture mode and greet the operator.
         self._set_capture_mode(CaptureMode.COMMAND)
         self._speak("System initialized. Press and hold space to speak. ESC to exit.")
         while not self.stopped():
@@ -1459,7 +1492,7 @@ class Coordinator(WorkerThread):
                     if "stop listening" in text.lower() or "shutdown system" in text.lower():
                         self._speak("System shutting down.")
                         break
-                    # Send to NLU worker
+                    # Forward normalized command text to NLU worker
                     self.nlu_outbox.put(MsgNLURequest(text=text))
                 elif msg.mode == CaptureMode.YESNO:
                     answer = (msg.text or "").lower()
@@ -1486,7 +1519,7 @@ class Coordinator(WorkerThread):
                         self._set_capture_mode(CaptureMode.COMMAND)
                     else:
                         self._speak("Sorry, I didn't catch that. Please say yes or no.")
-                        # remain in YESNO
+                        # Remain in YESNO mode and ask again next utterance
             if isinstance(msg, MsgNLUResult):
                 print(f"[Coordinator] NLU: {msg.intent} conf={msg.confidence}")
                 if self._requires_confirmation(msg):
@@ -1505,7 +1538,7 @@ class Coordinator(WorkerThread):
 # =========================
 
 class LifeguardSystem:
-    # Main application class: initializes queues, workers, and starts the system.
+    # Main application: initializes queues/workers and coordinates startup/shutdown.
     def __init__(self):
         # Queues
         self.q_audio_ctrl = queue.Queue()
@@ -1532,17 +1565,16 @@ class LifeguardSystem:
         self._workers: List[WorkerThread] = [self.tts, self.mav, self.nlu, self.stt, self.audio, self.coord]
 
     def start(self):
-        # Start all worker threads and run the coordinator in the main thread.
-        # Start TTS first to allow speaking
+    # Start all worker threads, then wait for the coordinator to finish (join).
         for w in self._workers:
             w.start()
-        # Join coordinator in the main thread until it stops (shutdown)
+    # Join coordinator thread until it signals shutdown.
         self.coord.join()
         self.stop()
 
     def stop(self):
-        # Stop all worker threads and attempt safe drone shutdown.
-        # Attempt to set vehicles to GUIDED synchronously before stopping threads
+    # Stop all worker threads and attempt safe drone shutdown.
+    # First try to set vehicles to GUIDED synchronously before stopping threads.
         try:
             if hasattr(self, 'mav') and isinstance(self.mav, MavlinkWorker):
                 try:
