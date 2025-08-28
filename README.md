@@ -79,6 +79,8 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 | "Confirm command." / "Yes." | `CONFIRM_ACTION` | `CONFIRMATION: True` |
 | "Cancel command." / "No." | `CANCEL_ACTION` | `CONFIRMATION: False` |
 
+Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUEST_SEARCH_AT_LOCATION`, and `COMBINED_SEARCH_AND_TARGET`. A dedicated `SET_ALTITUDE` intent is not implemented (yet). Yes/No confirmations are handled by a coordinator confirmation mode rather than a separate intent.
+
 -----
 
 ## Setup and Requirements
@@ -195,7 +197,15 @@ The system is designed to be modular and extensible.
   - **PyAudio errors on startup:** Check that your microphone is connected and recognized by the operating system. On Linux, ensure the `portaudio19-dev` package is installed.
   - **MAVLink connection issues:** Verify your connection strings in `AGENT_CONNECTION_CONFIGS`. Ensure the vehicle/simulator is running and that the specified port (e.g., `/dev/ttyACM0`, `udp:127.0.0.1:14550`) is correct and not in use by another application.
 
------
+
+## Test Simulator: agent1_grid_sim.py
+
+A small simulator script, `agent1_grid_sim.py`, is included to exercise the LIFEGUARD workflow without a full field setup.
+
+  - What it does: Connects to a MAVLink endpoint (e.g., SITL) and, once a mission is running in AUTO, reports a simulated find by sending a STATUSTEXT message: `FOUND:<lat>,<lon>` at a waypoint roughly in the middle of the mission.
+  - How it works: It infers mission readiness from STATUSTEXT, can pull the mission from the vehicle to get waypoint coordinates, waits for `MISSION_ITEM_REACHED`, and then emits the `FOUND` message.
+  - Why it’s useful: LIFEGUARD listens for `FOUND:` messages to automatically dispatch another available agent to verify the reported location.
+  - Quick start: Adjust the connection string at the bottom of `agent1_grid_sim.py` for your SITL/vehicle (e.g., `tcp:127.0.0.1:5763`) and run it in parallel while following the normal README flow for `lifeguard.py`.
 
 ## Acknowledgments
 
