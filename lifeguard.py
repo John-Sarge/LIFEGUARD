@@ -890,13 +890,14 @@ class MavlinkController:
             start_time = time.time()
             ack = None
             while time.time() - start_time < self.ACK_TIMEOUT_SECONDS:
-                ack_candidate = self.master.recv_match(type='COMMAND_ACK', blocking=False)
+                remaining_time = self.ACK_TIMEOUT_SECONDS - (time.time() - start_time)
+                # Wait up to 1 second or the remaining time, whichever is smaller
+                timeout = min(1.0, remaining_time)
+                ack_candidate = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=timeout)
                 if ack_candidate and hasattr(ack_candidate, 'command'):
                     if ack_candidate.command == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE:
                         ack = ack_candidate
                         break
-                else:
-                    time.sleep(0.1)
             if ack and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 print(f"MAVLink: Altitude change to {altitude_m} accepted via DO_CHANGE_ALTITUDE.")
                 return True
