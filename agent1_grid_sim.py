@@ -216,20 +216,20 @@ def simulate_found_midway(connection_string):
         num_waypoints = max(1, expected_count - 1)
         if num_waypoints > 4:
             start_idx = math.ceil(num_waypoints * 0.25)
-            end_idx = math.floor(num_waypoints * 0.75) - 1
-            # Clamp indices to valid bounds
-            start_idx = max(0, min(start_idx, num_waypoints - 1))
-            end_idx = max(0, min(end_idx, num_waypoints - 1))
+            end_idx = math.floor(num_waypoints * 0.75)
+            # Clamp indices to valid bounds (indices start from 1)
+            start_idx = max(1, min(int(start_idx), num_waypoints))
+            end_idx = max(1, min(int(end_idx), num_waypoints))
             # Ensure candidates is non-empty and indices are valid
             if end_idx >= start_idx:
                 candidates = list(range(start_idx, end_idx + 1))
             else:
-                candidates = list(range(num_waypoints))
+                candidates = list(range(1, num_waypoints + 1))
             print(f"Middle-half candidates: {candidates}")
             if candidates:
                 target_idx = random.choice(candidates)
             else:
-                target_idx = num_waypoints // 2
+                target_idx = (num_waypoints + 1) // 2
         else:
             target_idx = 1
     else:
