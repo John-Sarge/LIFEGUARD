@@ -165,8 +165,6 @@ def extract_altitude_from_text(text):
     Extracts an altitude value from a string, handling both digits and number words.
     Returns the altitude as an integer, or None if not found.
     """
-    import re
-    from word2number import w2n
     # Normalize text to lower case
     text = text.lower()
     # Try to find a number (digit or word) after 'altitude' in the text
@@ -1922,4 +1920,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt: shutting down...")
         app.stop()
+
     print("Application terminated.")
