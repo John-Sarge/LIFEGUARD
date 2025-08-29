@@ -889,8 +889,8 @@ class MavlinkController:
             ack = None
             while time.time() - start_time < self.ACK_TIMEOUT_SECONDS:
                 remaining_time = self.ACK_TIMEOUT_SECONDS - (time.time() - start_time)
-                # Wait up to 0.1 second or the remaining time, whichever is smaller
-                timeout = min(0.1, remaining_time)
+                # Wait up to 0.5 second or the remaining time, whichever is smaller
+                timeout = min(0.5, remaining_time)
                 ack_candidate = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=timeout)
                 if ack_candidate and hasattr(ack_candidate, 'command'):
                     if ack_candidate.command == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE:
