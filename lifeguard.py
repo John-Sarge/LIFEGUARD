@@ -533,10 +533,10 @@ class NaturalLanguageUnderstanding:
                 for word in words:
                     if word in number_words:
                         val = number_words[word]
-                        if val == 100 or val == 1000:
+                        if val == '100' or val == '1000':
                             if last == 0:
                                 last = 1
-                            last *= val
+                            last *= int(val)
                         else:
                             last += val
                     else:
