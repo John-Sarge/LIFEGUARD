@@ -893,7 +893,7 @@ class MavlinkController:
                 mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
                 0,
                 mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
-                200000,  
+                200000,  # Message interval in microseconds (200ms) for GLOBAL_POSITION_INT messages
                 0, 0, 0, 0, 0
             )
         except Exception:
