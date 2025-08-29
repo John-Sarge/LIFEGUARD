@@ -532,7 +532,6 @@ class NaturalLanguageUnderstanding:
             else:
                 # Try number words
                 try:
-                    from word2number import w2n
                     num = w2n.word_to_num(text)
                     if num > 0:
                         altitude_values = [num]
@@ -1930,6 +1929,7 @@ if __name__ == "__main__":
         app.stop()
 
     print("Application terminated.")
+
 
 
 
