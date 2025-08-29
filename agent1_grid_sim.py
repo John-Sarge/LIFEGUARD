@@ -41,35 +41,40 @@ def _pull_mission_items(master: mavutil.mavfile, sysid: int, compid: int, timeou
     """Pull mission items from the vehicle and map seq -> (lat, lon) in degrees.
     May include home at seq 0 if present.
     """
+
     items: Dict[int, Tuple[float, float]] = {}
-    # Request the list
-    try:
-        master.mav.mission_request_list_send(sysid, compid, mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
-        count_msg = master.recv_match(type=['MISSION_COUNT'], blocking=True, timeout=timeout)
-        if not count_msg:
-            return items
-        count = int(getattr(count_msg, 'count', 0))
-        for i in range(count):
-            # Request each item; prefer *_INT variant (degreesE7) when available
-            try:
-                master.mav.mission_request_int_send(sysid, compid, i, mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
-                item = master.recv_match(type=['MISSION_ITEM_INT', 'MISSION_ITEM'], blocking=True, timeout=timeout)
-            except Exception:
-                item = None
-            if not item:
+    retries = 3
+    for attempt in range(retries):
+        try:
+            master.mav.mission_request_list_send(sysid, compid, mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
+            count_msg = master.recv_match(type=['MISSION_COUNT'], blocking=True, timeout=timeout)
+            if not count_msg:
                 continue
-            # Extract lat/lon depending on type
-            if item.get_type() == 'MISSION_ITEM_INT':
-                lat = float(item.x) / 1e7
-                lon = float(item.y) / 1e7
-                seq = int(item.seq)
-            else:
-                lat = float(item.x)  # already degrees
-                lon = float(item.y)
-                seq = int(item.seq)
-            items[seq] = (lat, lon)
-    except Exception:
-        pass
+            count = int(getattr(count_msg, 'count', 0))
+            print(f"MISSION_COUNT received: {count}")
+            for i in range(count):
+                try:
+                    master.mav.mission_request_int_send(sysid, compid, i, mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
+                    item = master.recv_match(type=['MISSION_ITEM_INT', 'MISSION_ITEM'], blocking=True, timeout=timeout)
+                except Exception:
+                    item = None
+                if not item:
+                    continue
+                if item.get_type() == 'MISSION_ITEM_INT':
+                    lat = float(item.x) / 1e7
+                    lon = float(item.y) / 1e7
+                    seq = int(item.seq)
+                else:
+                    lat = float(item.x)
+                    lon = float(item.y)
+                    seq = int(item.seq)
+                items[seq] = (lat, lon)
+            print(f"Pulled {len(items)} mission items (attempt {attempt+1}/{retries})")
+            if len(items) == count:
+                break  # Got all items
+        except Exception:
+            pass
+        time.sleep(1)  # Wait before retrying
     return items
 
 
@@ -165,35 +170,61 @@ def simulate_found_midway(connection_string):
                         print("Mission items present and AUTO. Mission started.")
                         mission_started = True
 
-    # Decide target index if not already set
-    # Determine highest valid waypoint seq (exclude home seq 0)
-    if mission_items:
-        all_seqs = sorted(mission_items.keys())
-        max_seq = max([s for s in all_seqs if s >= 1], default=1)
-        mission_count = max_seq  # use highest reachable seq as count proxy
-    elif mission_count_max is not None:
-        # If mission_count_max includes home, cap at (max-1) for reachable seqs; otherwise assume it's a seq count
-        mission_count = max(1, mission_count_max - 1)
-        max_seq = mission_count
+    # Wait until all mission items are pulled and match expected count
+    expected_count = None
+    if mission_count_max is not None:
+        expected_count = mission_count_max
+    elif mission_count is not None:
+        expected_count = mission_count
     else:
-        # Fallback to a reasonable default
-        mission_count = 10
-        max_seq = 10
+        expected_count = None
 
-    # Choose a target index in [1..max_seq] using a middle-half heuristic
-    if max_seq > 4:
-        start_idx = max(1, max_seq // 4)
-        end_idx = max(start_idx, (max_seq * 3) // 4)
-        target_idx = random.randint(start_idx, end_idx)
+    # Try to pull until we have all waypoints
+    max_wait = 15  # seconds
+    start_wait = time.time()
+    while True:
+        if mission_items and expected_count and len(mission_items) >= expected_count:
+            break
+        if time.time() - start_wait > max_wait:
+            print(f"Timeout waiting for full mission upload. Proceeding with {len(mission_items)} items.")
+            break
+        time.sleep(0.5)
+        mission_items = _pull_mission_items(master, sysid, compid, timeout=3)
+
+    # Now pick target index
+    import math
+    if mission_items:
+        all_seqs = sorted([s for s in mission_items.keys() if s >= 1])
+        num_waypoints = len(all_seqs)
+        if num_waypoints > 4:
+            start_idx = math.ceil(num_waypoints * 0.25)
+            end_idx = math.floor(num_waypoints * 0.75) - 1
+            candidates = all_seqs[start_idx:end_idx+1] if end_idx >= start_idx else all_seqs
+            print(f"Middle-half candidates: {candidates}")
+            if candidates:
+                target_idx = random.choice(candidates)
+            else:
+                target_idx = all_seqs[num_waypoints // 2]
+        elif num_waypoints > 0:
+            target_idx = all_seqs[0]
+        else:
+            target_idx = 1
+    elif expected_count:
+        num_waypoints = max(1, expected_count - 1)
+        if num_waypoints > 4:
+            start_idx = math.ceil(num_waypoints * 0.25)
+            end_idx = math.floor(num_waypoints * 0.75) - 1
+            candidates = list(range(start_idx + 1, end_idx + 2))
+            print(f"Middle-half candidates: {candidates}")
+            if candidates:
+                target_idx = random.choice(candidates)
+            else:
+                target_idx = num_waypoints // 2
+        else:
+            target_idx = 1
     else:
         target_idx = 1
-    # Clamp to valid range
-    target_idx = max(1, min(target_idx, max_seq))
     print(f"Target will be found at waypoint {target_idx} (middle half heuristic)")
-
-    # If mission items are still unknown, try one more pull
-    if not mission_items:
-        mission_items = _pull_mission_items(master, sysid, compid, timeout=3)
 
     # Wait for MISSION_ITEM_REACHED and report FOUND at target_idx
     found_sent = False
@@ -205,7 +236,6 @@ def simulate_found_midway(connection_string):
             text = msg.text.decode() if hasattr(msg.text, 'decode') else msg.text
             print(f"STATUSTEXT: {text}")
             continue
-        # Handle MISSION_ITEM_REACHED
         reached = int(getattr(msg, 'seq', -1))
         print(f"Waypoint reached: {reached}")
         if reached == target_idx:
