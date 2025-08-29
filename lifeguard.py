@@ -436,14 +436,6 @@ class NaturalLanguageUnderstanding:
         entities_payload = {}
         confidence = 0.5
 
-        number_words = {
-            "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
-            "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
-            "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15",
-            "sixteen": "16", "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
-            "thirty": "30", "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80", "ninety": "90",
-            "hundred": "100", "thousand": "1000"
-        }
         def spoken_agent_to_id(agent_text):
             agent_text = agent_text.lower().replace("drone", "").replace("agent", "").strip()
             # Fuzzy correction for common misrecognitions
@@ -454,9 +446,6 @@ class NaturalLanguageUnderstanding:
             # Try direct digit
             if agent_text.isdigit():
                 return f"agent{agent_text}"
-            # Try number word
-            if agent_text in number_words:
-                return f"agent{number_words[agent_text]}"
             # Try word2number
             try:
                 num = w2n.word_to_num(agent_text)
@@ -464,7 +453,6 @@ class NaturalLanguageUnderstanding:
             except ValueError:
                 pass
             return None
-
         extracted_spacy_ents = []
         for ent in doc.ents:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
