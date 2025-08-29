@@ -463,10 +463,8 @@ class NaturalLanguageUnderstanding:
         extracted_spacy_ents = []
         for ent in doc.ents:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
-            if ent.label_ == "ALTITUDE_SET":
-                match = re.search(r'\b\d+(\.\d+)?\b', ent.text)
-                if match:
-                    entity_data["altitude_value"] = float(match.group()) if '.' in match.group() else int(match.group())
+                    altitude_str = match.group()
+                    entity_data["altitude_value"] = float(altitude_str) if '.' in altitude_str else int(altitude_str)
             if ent.label_ == "LOCATION_GPS_COMPLEX" and Span.has_extension("parsed_gps_coords"):
                 parsed = getattr(ent._, "parsed_gps_coords", None)
                 if parsed:
