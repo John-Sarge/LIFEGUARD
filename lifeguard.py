@@ -450,7 +450,7 @@ class NaturalLanguageUnderstanding:
             try:
                 num = w2n.word_to_num(agent_text)
                 return f"agent{num}"
-            except Exception:
+            except ValueError:
                 pass
             return None
 
