@@ -1790,7 +1790,7 @@ class Coordinator(WorkerThread):
     # Main loop: process system messages and coordinate subsystem actions.
     # Set initial capture mode and greet the operator.
         self._set_capture_mode(CaptureMode.COMMAND)
-        self._speak("LIFEGUARD is initialized!. Press and hold space to speak. Press escape to exit.")
+        self._speak("LIFEGUARD is initialized! Press and hold space to speak. Press escape to exit.")
         while not self.stopped():
             try:
                 msg = self.inbox.get(timeout=0.2)
