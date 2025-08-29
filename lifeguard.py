@@ -446,7 +446,7 @@ class NaturalLanguageUnderstanding:
             # Fuzzy correction for common misrecognitions using a dictionary
             corrections = {
                 "to": "two", "too": "two", "tu": "two", "tow": "two",
-                "for": "four", "four": "four", "fore": "four", "fohr": "four", "fawr": "four"
+                "for": "four", "fore": "four", "fohr": "four", "fawr": "four"
             }
             if agent_text in corrections:
                 agent_text = corrections[agent_text]
