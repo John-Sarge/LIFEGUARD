@@ -552,9 +552,8 @@ class NaturalLanguageUnderstanding:
         if grid_sizes:
             entities_payload["grid_size_meters"] = grid_sizes[0]
 
-            if altitude_values:
-                entities_payload["altitude_meters"] = altitude_values[0]
-
+        if altitude_values:
+            entities_payload["altitude_meters"] = altitude_values[0]
         selected_agent_id = None
         if agent_ids_num: selected_agent_id = agent_ids_num[0]
         elif agent_ids_text: selected_agent_id = agent_ids_text[0]
