@@ -922,7 +922,7 @@ class MavlinkController:
         if not current_pos:
             try:
                 current_pos = self.master.messages.get('GLOBAL_POSITION_INT')
-            except Exception:
+            except (AttributeError, TypeError):
                 current_pos = None
         if not current_pos:
             print("MAVLink: Could not get current position. Altitude change aborted.")
