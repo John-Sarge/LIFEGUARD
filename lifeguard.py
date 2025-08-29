@@ -908,8 +908,8 @@ class MavlinkController:
                 200000,  # Message interval in microseconds (200ms) for GLOBAL_POSITION_INT messages
                 0, 0, 0, 0, 0
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"MAVLink: Error setting message interval: {e}")
 
         print("MAVLink: Waiting for current position...")
         current_pos = None
