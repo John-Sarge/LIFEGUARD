@@ -7,6 +7,7 @@
 import time
 import re
 import random
+import math
 from typing import Dict, Optional, Tuple, List
 from pymavlink import mavutil
 
@@ -192,7 +193,6 @@ def simulate_found_midway(connection_string):
         mission_items = _pull_mission_items(master, sysid, compid, timeout=3)
 
     # Now pick target index
-    import math
     if mission_items:
         all_seqs = sorted([s for s in mission_items.keys() if s >= 1])
         num_waypoints = len(all_seqs)
@@ -252,3 +252,4 @@ def simulate_found_midway(connection_string):
 if __name__ == "__main__":
     connection_string = "tcp:10.24.5.232:5763"  # Change per SITL instance
     simulate_found_midway(connection_string)
+
