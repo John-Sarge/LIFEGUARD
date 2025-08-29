@@ -544,9 +544,9 @@ class NaturalLanguageUnderstanding:
                         if val == 100 or val == 1000:
                             if last == 0:
                                 last = 1
-                            last *= int(val)
+                            last *= val
                         else:
-                            last += int(val)
+                            last += val
                     else:
                         if last:
                             total += last
