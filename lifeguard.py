@@ -1632,7 +1632,8 @@ class MavlinkWorker(WorkerThread):
                             self._speak("Failed to start mission.")
                     else:
                         self._speak("Failed to arm vehicle.")
-                        self._speak("Failed to set AUTO mode.")
+                else:        
+                    self._speak("Failed to set AUTO mode.")
             elif isinstance(msg, MsgCommandSetAltitude):
                 self._speak(f"Setting altitude to {msg.altitude_m} meters.")
                 if ctrl.set_altitude(msg.altitude_m):
@@ -1924,3 +1925,4 @@ if __name__ == "__main__":
         app.stop()
 
     print("Application terminated.")
+
