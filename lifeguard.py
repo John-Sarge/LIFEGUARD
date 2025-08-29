@@ -901,6 +901,7 @@ class MavlinkController:
 
         print("MAVLink: Waiting for current position...")
         current_pos = None
+        # Try up to 20 times to receive the current position before falling back to alternative retrieval.
         for _ in range(20):  
             msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=0.2)
             if msg:
