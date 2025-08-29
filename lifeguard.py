@@ -443,11 +443,13 @@ class NaturalLanguageUnderstanding:
 
         def spoken_agent_to_id(agent_text):
             agent_text = agent_text.lower().replace("drone", "").replace("agent", "").strip()
-            # Fuzzy correction for common misrecognitions
-            if agent_text in ["to", "too", "tu", "tow"]:
-                agent_text = "two"
-            if agent_text in ["for", "four", "fore", "fohr", "fawr"]:
-                agent_text = "four"
+            # Fuzzy correction for common misrecognitions using a dictionary
+            corrections = {
+                "to": "two", "too": "two", "tu": "two", "tow": "two",
+                "for": "four", "four": "four", "fore": "four", "fohr": "four", "fawr": "four"
+            }
+            if agent_text in corrections:
+                agent_text = corrections[agent_text]
             # Try direct digit
             if agent_text.isdigit():
                 return f"agent{agent_text}"
