@@ -189,7 +189,7 @@ def extract_altitude_from_text(text):
                 try:
                     num = w2n.word_to_num(part)
                     numbers.append(num)
-                except Exception:
+                except ValueError:
                     pass
         if numbers:
             return max(numbers)
