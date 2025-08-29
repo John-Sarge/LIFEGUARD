@@ -862,8 +862,16 @@ class MavlinkController:
                 0,
                 float(altitude_m), 0, 0, 0, 0, 0, 0
             )
-            ack = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-            if ack and ack.command == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            # Wait for the correct ACK for DO_CHANGE_ALTITUDE, ignoring unrelated ACKs until timeout
+            start_time = time.time()
+            ack = None
+            while time.time() - start_time < 3:
+                ack_candidate = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=0.5)
+                if ack_candidate and hasattr(ack_candidate, 'command'):
+                    if ack_candidate.command == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE:
+                        ack = ack_candidate
+                        break
+            if ack and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 print(f"MAVLink: Altitude change to {altitude_m} accepted via DO_CHANGE_ALTITUDE.")
                 return True
             print(f"MAVLink: DO_CHANGE_ALTITUDE not accepted or no ACK: {ack}. Falling back to position target...")
