@@ -170,12 +170,14 @@ def extract_altitude_from_text(text):
     # Normalize text to lower case
     text = text.lower()
     # Try to find a number (digit or word) after 'altitude' in the text
-    match = re.search(
-        r'altitude\s*(to|is|at)?\s*((?:\d+(?:\s*-\s*\d+)?|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|'
-        r'eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|'
-        r'twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|point|and| |-)+))',
-        text
+    NUMBER_WORDS = (
+        "zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+        "eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+        "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|point|and"
     )
+    number_word_pattern = rf'(?:{NUMBER_WORDS}| |-)+'
+    regex = rf'altitude\s*(to|is|at)?\s*((?:\d+(?:\s*-\s*\d+)?|{number_word_pattern}))'
+    match = re.search(regex, text)
     numbers = []
     if match:
         candidate = match.group(2).strip()
@@ -463,8 +465,12 @@ class NaturalLanguageUnderstanding:
         extracted_spacy_ents = []
         for ent in doc.ents:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
-                    altitude_str = match.group()
+            if ent.label_ == "ALTITUDE_SET":
+                try:
+                    altitude_str = ent.text
                     entity_data["altitude_value"] = float(altitude_str) if '.' in altitude_str else int(altitude_str)
+                except Exception:
+                    pass
             if ent.label_ == "LOCATION_GPS_COMPLEX" and Span.has_extension("parsed_gps_coords"):
                 parsed = getattr(ent._, "parsed_gps_coords", None)
                 if parsed:
