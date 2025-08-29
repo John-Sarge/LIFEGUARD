@@ -607,6 +607,7 @@ class NaturalLanguageUnderstanding:
 
 class MavlinkController:
     # Controls a single drone via MAVLink, including mission upload and mode changes.
+    MAX_POSITION_RETRIES = 20  # Number of attempts to receive current position
     def __init__(self, connection_string, baudrate=None, source_system_id=255):
         self.connection_string = connection_string
         self.baudrate = baudrate
@@ -907,9 +908,8 @@ class MavlinkController:
 
         print("MAVLink: Waiting for current position...")
         current_pos = None
-        # Try up to 20 times to receive the current position before falling back to alternative retrieval.
-        MAX_POSITION_RETRIES = 20
-        for _ in range(MAX_POSITION_RETRIES):
+        # Try up to MAX_POSITION_RETRIES times to receive the current position before falling back to alternative retrieval.
+        for _ in range(self.MAX_POSITION_RETRIES):
             msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=0.2)
             if msg:
                 current_pos = msg
