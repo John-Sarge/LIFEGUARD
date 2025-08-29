@@ -464,9 +464,9 @@ class NaturalLanguageUnderstanding:
         for ent in doc.ents:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
             if ent.label_ == "ALTITUDE_SET":
-                numeric_part = "".join(filter(str.isdigit, ent.text))
-                if numeric_part:
-                    entity_data["altitude_value"] = int(numeric_part)
+                match = re.search(r'\b\d+(\.\d+)?\b', ent.text)
+                if match:
+                    entity_data["altitude_value"] = float(match.group()) if '.' in match.group() else int(match.group())
             if ent.label_ == "LOCATION_GPS_COMPLEX" and Span.has_extension("parsed_gps_coords"):
                 parsed = getattr(ent._, "parsed_gps_coords", None)
                 if parsed:
