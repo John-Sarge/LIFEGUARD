@@ -164,26 +164,38 @@ def extract_altitude_from_text(text):
     """
     Extracts an altitude value from a string, handling both digits and number words.
     Returns the altitude as an integer, or None if not found.
+    Handles cases like 'altitude 50 to 100 feet' by returning the largest number.
     """
     # Normalize text to lower case
     text = text.lower()
     # Try to find a number (digit or word) after 'altitude' in the text
     match = re.search(r'altitude\s*(to|is|at)?\s*([a-zA-Z0-9\- ]+)', text)
+    numbers = []
     if match:
         candidate = match.group(2).strip()
-        # Try direct digit
-        digit_match = re.search(r'(\d+)', candidate)
-        if digit_match:
-            return int(digit_match.group(1))
-        # Try word2number for number words
-        try:
-            return w2n.word_to_num(candidate)
-        except Exception:
-            pass
+        # Find all digit numbers
+        digit_matches = re.findall(r'\d+', candidate)
+        for d in digit_matches:
+            try:
+                numbers.append(int(d))
+            except Exception:
+                pass
+        # Try to extract number words (split on 'to', 'and', etc.)
+        parts = re.split(r'\bto\b|\band\b|,', candidate)
+        for part in parts:
+            part = part.strip()
+            if part:
+                try:
+                    num = w2n.word_to_num(part)
+                    numbers.append(num)
+                except Exception:
+                    pass
+        if numbers:
+            return max(numbers)
     # Fallback: look for any number in text
-    num_match = re.search(r'(\d+)', text)
-    if num_match:
-        return int(num_match.group(1))
+    num_matches = re.findall(r'\d+', text)
+    if num_matches:
+        return max(int(n) for n in num_matches)
     return None
 
 # =========================
