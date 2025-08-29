@@ -197,8 +197,8 @@ def simulate_found_midway(connection_string):
         all_seqs = sorted([s for s in mission_items.keys() if s >= 1])
         num_waypoints = len(all_seqs)
         if num_waypoints > 4:
-            start_idx = int(num_waypoints * 0.25)
-            end_idx = int(num_waypoints * 0.75) - 1
+            start_idx = math.ceil(num_waypoints * 0.25)
+            end_idx = math.floor(num_waypoints * 0.75) - 1
             # Clamp indices to valid bounds
             start_idx = max(0, min(start_idx, num_waypoints - 1))
             end_idx = max(0, min(end_idx, num_waypoints - 1))
