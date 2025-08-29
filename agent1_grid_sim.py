@@ -202,12 +202,16 @@ def simulate_found_midway(connection_string):
             # Clamp indices to valid bounds (0-based indexing)
             start_idx = max(0, min(start_idx, num_waypoints - 1))
             end_idx = max(0, min(end_idx, num_waypoints - 1))
-            candidates = all_seqs[start_idx:end_idx+1] if end_idx >= start_idx else all_seqs
-            print(f"Middle-half candidates: {candidates}")
-            if candidates:
-                target_idx = random.choice(candidates)
-            else:
+            # Ensure end_idx >= start_idx, otherwise fallback to middle
+            if end_idx < start_idx:
                 target_idx = all_seqs[num_waypoints // 2]
+            else:
+                candidates = all_seqs[start_idx:end_idx+1]
+                print(f"Middle-half candidates: {candidates}")
+                if candidates:
+                    target_idx = random.choice(candidates)
+                else:
+                    target_idx = all_seqs[num_waypoints // 2]
         elif num_waypoints > 0:
             target_idx = all_seqs[0]
         else:
@@ -221,15 +225,16 @@ def simulate_found_midway(connection_string):
             start_idx = max(1, min(int(start_idx), num_waypoints))
             end_idx = max(1, min(int(end_idx), num_waypoints))
             # Ensure candidates is non-empty and indices are valid
-            if end_idx >= start_idx:
-                candidates = list(range(start_idx, end_idx + 1))
-            else:
-                candidates = list(range(1, num_waypoints + 1))
-            print(f"Middle-half candidates: {candidates}")
-            if candidates:
-                target_idx = random.choice(candidates)
-            else:
+            # Ensure end_idx >= start_idx, otherwise fallback to middle
+            if end_idx < start_idx:
                 target_idx = (num_waypoints + 1) // 2
+            else:
+                candidates = list(range(start_idx, end_idx + 1))
+                print(f"Middle-half candidates: {candidates}")
+                if candidates:
+                    target_idx = random.choice(candidates)
+                else:
+                    target_idx = (num_waypoints + 1) // 2
         else:
             target_idx = 1
     else:
