@@ -536,8 +536,8 @@ class NaturalLanguageUnderstanding:
                 def extract_altitude_phrase(text):
                     # Look for phrases like "altitude <number>", "set altitude to <number>", etc.
                     patterns = [
-                        r"(?:altitude|set altitude|change altitude|update altitude)\s*(?:to|at|is|of)?\s*([A-Za-z\s\-]+|\d+)",
-                        r"(?:to|at|is|of)\s*([A-Za-z\s\-]+|\d+)\s*(?:meters|meter|m)?\b"
+                        # Match phrases like "altitude to <number>", "set altitude to <number>", etc.
+                        r"(?:altitude|set altitude|change altitude|update altitude)\s*(?:to|at|is|of)?\s*([A-Za-z\s\-]+|\d+)\s*(?:meters|meter|m)?\b"
                     ]
                     for pat in patterns:
                         m = re.search(pat, text, re.IGNORECASE)
