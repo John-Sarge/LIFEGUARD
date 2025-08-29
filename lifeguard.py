@@ -558,14 +558,19 @@ class NaturalLanguageUnderstanding:
         if agent_ids_num: selected_agent_id = agent_ids_num[0]
         elif agent_ids_text: selected_agent_id = agent_ids_text[0]
 
+        # Helper function to detect explicit altitude command in text
+        def is_altitude_command(text, altitude_values):
+            altitude_phrases = ["altitude", "set altitude", "change altitude", "update altitude"]
+            return bool(altitude_values) and any(phrase in text.lower() for phrase in altitude_phrases)
+
         # Only trigger SELECT_AGENT if agent id is present and no altitude command is detected.
-        if selected_agent_id and action_select_verbs and not (altitude_values and (any(w in text.lower() for w in ["altitude", "set altitude", "change altitude", "update altitude"]))):
+        if selected_agent_id and action_select_verbs and not is_altitude_command(text, altitude_values):
             intent = "SELECT_AGENT"
             entities_payload["selected_agent_id"] = selected_agent_id
             confidence = 0.9
 
         # Only trigger altitude intent if an explicit altitude command is present in the text.
-        if altitude_values and (any(w in text.lower() for w in ["altitude", "set altitude", "change altitude", "update altitude"])):
+        if is_altitude_command(text, altitude_values):
             intent = "SET_AGENT_ALTITUDE"
             entities_payload["altitude_meters"] = altitude_values[0]
             confidence = max(confidence, 0.95)
