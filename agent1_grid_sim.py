@@ -214,7 +214,7 @@ def simulate_found_midway(connection_string):
         if num_waypoints > 4:
             start_idx = math.ceil(num_waypoints * 0.25)
             end_idx = math.floor(num_waypoints * 0.75) - 1
-            candidates = list(range(start_idx + 1, end_idx + 2))
+            candidates = list(range(start_idx, end_idx + 1))
             print(f"Middle-half candidates: {candidates}")
             if candidates:
                 target_idx = random.choice(candidates)
