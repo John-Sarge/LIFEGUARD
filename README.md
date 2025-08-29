@@ -6,7 +6,7 @@
 
 **Lightweight Intent-Focused Engine for Guidance in Unmanned Autonomous Rescue Deployments**
 
-> LIFEGUARD enables operators to naturally and effectively pass Commander’s Intent to autonomous units, bridging voice commands and machine action for efficient, reliable, and intuitive search and rescue deployments.
+> LIFEGUARD enables operators to naturally and effectively pass Command Intent to autonomous units, bridging voice commands and machine action for efficient, reliable, and intuitive search and rescue deployments.
 
 -----
 
@@ -79,7 +79,7 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 | "Confirm command." / "Yes." | `CONFIRM_ACTION` | `CONFIRMATION: True` |
 | "Cancel command." / "No." | `CANCEL_ACTION` | `CONFIRMATION: False` |
 
-Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUEST_SEARCH_AT_LOCATION`, and `COMBINED_SEARCH_AND_TARGET`. A dedicated `SET_ALTITUDE` intent is not implemented (yet). Yes/No confirmations are handled by a coordinator confirmation mode rather than a separate intent.
+Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUEST_SEARCH_AT_LOCATION`, and `COMBINED_SEARCH_AND_TARGET`. Yes/No confirmations are handled by a coordinator confirmation mode rather than a separate intent.
 
 -----
 
