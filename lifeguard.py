@@ -165,6 +165,7 @@ def extract_altitude_from_text(text):
     Extracts an altitude value from a string, handling both digits and number words.
     Returns the altitude as an integer, or None if not found.
     Handles cases like 'altitude 50 to 100 feet' by returning the largest number.
+    Note: Unit indicators such as 'feet', 'meters', etc. are ignored and not parsed or converted.
     """
     # Normalize text to lower case
     text = text.lower()
