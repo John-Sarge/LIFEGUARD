@@ -160,6 +160,34 @@ def spoken_numbers_to_digits(text):
             return match.group(0)
     return number_pattern.sub(repl, text)
 
+def extract_altitude_from_text(text):
+    """
+    Extracts an altitude value from a string, handling both digits and number words.
+    Returns the altitude as an integer, or None if not found.
+    """
+    import re
+    from word2number import w2n
+    # Normalize text to lower case
+    text = text.lower()
+    # Try to find a number (digit or word) after 'altitude' in the text
+    match = re.search(r'altitude\s*(to|is|at)?\s*([a-zA-Z0-9\- ]+)', text)
+    if match:
+        candidate = match.group(2).strip()
+        # Try direct digit
+        digit_match = re.search(r'(\d+)', candidate)
+        if digit_match:
+            return int(digit_match.group(1))
+        # Try word2number for number words
+        try:
+            return w2n.word_to_num(candidate)
+        except Exception:
+            pass
+    # Fallback: look for any number in text
+    num_match = re.search(r'(\d+)', text)
+    if num_match:
+        return int(num_match.group(1))
+    return None
+
 # =========================
 # ===== STT COMPONENT =====
 # =========================
@@ -357,6 +385,10 @@ class NaturalLanguageUnderstanding:
         if "sar_entity_ruler" not in self.nlp.pipe_names:
             ruler = self.nlp.add_pipe("entity_ruler", name="sar_entity_ruler", before="lat_lon_entity_recognizer")
             sar_patterns = [
+                    # Altitude set patterns
+                {"label": "ALTITUDE_SET", "pattern": [{"LEMMA": {"IN": ["set", "change", "update"]}}, {"LOWER": "altitude"}, {"LIKE_NUM": True}]},
+                {"label": "ALTITUDE_SET", "pattern": [{"LOWER": "altitude"}, {"LEMMA": {"IN": ["set", "change", "update"]}}, {"LIKE_NUM": True}]},
+                {"label": "ALTITUDE_SET", "pattern": [{"LOWER": "altitude"}, {"LIKE_NUM": True}]},
                 {"label": "TARGET_OBJECT", "pattern": [{"LOWER": "person"}]},
                 {"label": "TARGET_OBJECT", "pattern": [{"LOWER": "boat"}]},
                 {"label": "GRID_SIZE_METERS", "pattern": [{"LIKE_NUM": True}, {"LOWER": {"IN": ["meter", "meters", "m"]}}, {"LOWER": "grid"}]},
@@ -372,19 +404,63 @@ class NaturalLanguageUnderstanding:
                 {"label": "ACTION_SELECT", "pattern": [{"LEMMA": {"IN": ["select", "target", "choose", "activate"]}}]},
                 {"label": "ACTION_VERB", "pattern": [{"LEMMA": "search"}]},
             ]
+            # Add more robust patterns for altitude commands
+            sar_patterns.extend([
+                {"label": "ALTITUDE_SET", "pattern": [{"LEMMA": {"IN": ["set", "change", "update", "adjust", "make", "put"]}}, {"LOWER": "altitude"}, {"IS_ALPHA": True}]},
+                {"label": "ALTITUDE_SET", "pattern": [{"LOWER": "altitude"}, {"LEMMA": {"IN": ["set", "change", "update", "adjust", "make", "put"]}}, {"IS_ALPHA": True}]},
+                {"label": "ALTITUDE_SET", "pattern": [{"LOWER": "altitude"}, {"IS_ALPHA": True}]},
+                {"label": "ALTITUDE_SET", "pattern": [{"LEMMA": {"IN": ["set", "change", "update", "adjust", "make", "put"]}}, {"LOWER": "altitude"}, {"LOWER": "to"}, {"IS_ALPHA": True}]},
+                {"label": "ALTITUDE_SET", "pattern": [{"LOWER": "altitude"}, {"LOWER": "to"}, {"IS_ALPHA": True}]},
+            ])
             ruler.add_patterns(sar_patterns)
 
     def parse_command(self, text):
     # Parse a command string and extract intent, confidence, and entities.
-    # Also normalizes a few common patterns (e.g., grid size heuristics) from raw text.
+    # Heuristics:
+    # - Use spaCy (EntityRuler + custom GPS) to tag entities.
+    # - Backfill grid size/altitude via regex/word-number parsing when missing.
+    # - Favor explicit altitude phrases for SET_AGENT_ALTITUDE to avoid false positives.
         doc = self.nlp(text)
         intent = "UNKNOWN_INTENT"
         entities_payload = {}
         confidence = 0.5
 
+        number_words = {
+            "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+            "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+            "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15",
+            "sixteen": "16", "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
+            "thirty": "30", "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80", "ninety": "90",
+            "hundred": "100", "thousand": "1000"
+        }
+        def spoken_agent_to_id(agent_text):
+            agent_text = agent_text.lower().replace("drone", "").replace("agent", "").strip()
+            # Fuzzy correction for common misrecognitions
+            if agent_text in ["to", "too", "tu", "tow"]:
+                agent_text = "two"
+            if agent_text in ["for", "four", "fore", "fohr", "fawr"]:
+                agent_text = "four"
+            # Try direct digit
+            if agent_text.isdigit():
+                return f"agent{agent_text}"
+            # Try number word
+            if agent_text in number_words:
+                return f"agent{number_words[agent_text]}"
+            # Try word2number
+            try:
+                num = w2n.word_to_num(agent_text)
+                return f"agent{num}"
+            except Exception:
+                pass
+            return None
+
         extracted_spacy_ents = []
         for ent in doc.ents:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
+            if ent.label_ == "ALTITUDE_SET":
+                numeric_part = "".join(filter(str.isdigit, ent.text))
+                if numeric_part:
+                    entity_data["altitude_value"] = int(numeric_part)
             if ent.label_ == "LOCATION_GPS_COMPLEX" and Span.has_extension("parsed_gps_coords"):
                 parsed = getattr(ent._, "parsed_gps_coords", None)
                 if parsed:
@@ -394,11 +470,13 @@ class NaturalLanguageUnderstanding:
                 if numeric_part:
                     entity_data["value"] = int(numeric_part)
             elif ent.label_ == "AGENT_ID_NUM":
-                numeric_part = "".join(filter(str.isdigit, ent.text))
-                entity_data["value"] = f"agent{numeric_part}"
+                agent_id = spoken_agent_to_id(ent.text)
+                if agent_id:
+                    entity_data["value"] = agent_id
             elif ent.label_ == "AGENT_ID_TEXT":
-                name_part = ent.text.lower().replace("drone", "").replace("agent", "").strip()
-                entity_data["value"] = name_part
+                agent_id = spoken_agent_to_id(ent.text)
+                if agent_id:
+                    entity_data["value"] = agent_id
             extracted_spacy_ents.append(entity_data)
         entities_payload["raw_spacy_entities"] = extracted_spacy_ents
 
@@ -429,19 +507,69 @@ class NaturalLanguageUnderstanding:
         agent_ids_num = get_entity_values("AGENT_ID_NUM", "value")
         agent_ids_text = get_entity_values("AGENT_ID_TEXT", "value")
 
+        # Fallbacks: if the entity ruler missed simple forms, recover from raw text.
+        # 1) Treat plain 'select' as ACTION_SELECT if present.
+        if not action_select_verbs and re.search(r"\bselect\b", text, re.IGNORECASE):
+            action_select_verbs = ["select"]
+        # 2) Extract agent id from patterns like 'agent 1' or 'agent one' if not found in entities.
+        if not agent_ids_num and not agent_ids_text:
+            m = re.search(r"\b(?:drone|agent)\s+([A-Za-z]+|\d+)\b", text, re.IGNORECASE)
+            if m:
+                sid = spoken_agent_to_id(m.group(1))
+                if sid:
+                    agent_ids_num = [sid]
+
+        altitude_values = [e["altitude_value"] for e in extracted_spacy_ents if e["label"] == "ALTITUDE_SET" and "altitude_value" in e]
+        # If no altitude found in entities, try to extract from text (digits or number words)
+        if not altitude_values:
+            alt_from_text = extract_altitude_from_text(text)
+            if alt_from_text is not None:
+                altitude_values = [alt_from_text]
+            else:
+                # Try number words
+                words = text.lower().replace('-', ' ').split()
+                total = 0
+                last = 0
+                for word in words:
+                    if word in number_words:
+                        val = number_words[word]
+                        if val == 100 or val == 1000:
+                            if last == 0:
+                                last = 1
+                            last *= val
+                        else:
+                            last += val
+                    else:
+                        if last:
+                            total += last
+                            last = 0
+                total += last
+                if total > 0:
+                    altitude_values = [total]
+
         if parsed_gps_coords:
             entities_payload.update(parsed_gps_coords)
         if grid_sizes:
             entities_payload["grid_size_meters"] = grid_sizes[0]
 
+            if altitude_values:
+                entities_payload["altitude_meters"] = altitude_values[0]
+
         selected_agent_id = None
         if agent_ids_num: selected_agent_id = agent_ids_num[0]
         elif agent_ids_text: selected_agent_id = agent_ids_text[0]
 
-        if selected_agent_id and action_select_verbs:
+        # Only trigger SELECT_AGENT if agent id is present and no altitude command is detected.
+        if selected_agent_id and action_select_verbs and not (altitude_values and (any(w in text.lower() for w in ["altitude", "set altitude", "change altitude", "update altitude"]))):
             intent = "SELECT_AGENT"
             entities_payload["selected_agent_id"] = selected_agent_id
             confidence = 0.9
+
+        # Only trigger altitude intent if an explicit altitude command is present in the text.
+        if altitude_values and (any(w in text.lower() for w in ["altitude", "set altitude", "change altitude", "update altitude"])):
+            intent = "SET_AGENT_ALTITUDE"
+            entities_payload["altitude_meters"] = altitude_values[0]
+            confidence = max(confidence, 0.95)
 
         target_details_parts = []
         if target_objects: target_details_parts.extend(target_objects)
@@ -528,6 +656,7 @@ class MavlinkController:
     def upload_mission(self, waypoints_data):
     # Upload a list of waypoints as a mission to the drone.
     # Accepts a sequence of tuples shaped like (lat, lon, alt, cmd, p1, p2, p3, p4 [, frame, is_current, autocontinue]).
+    # A home/dummy item is inserted at seq=0 to satisfy mission protocols that expect a home entry.
         if not self.is_connected():
             print("MAVLink: Not connected. Cannot upload mission.")
             return False
@@ -678,7 +807,9 @@ class MavlinkController:
             print(f"MAVLink: Connection closed for {self.connection_string}.")
 
     def _calculate_rectangular_grid_waypoints(self, center_lat, center_lon, grid_width_m, grid_height_m, swath_width_m, altitude_m):
-    # Generate a rectangular grid of waypoints for search patterns (lawnmower pattern).
+    # Generate a rectangular grid of waypoints for a lawnmower search pattern.
+    # Small-area approximation: convert meter offsets to lat/lon deltas using a spherical Earth.
+    # Tracks run N-S and alternate direction each pass to reduce turn time.
         waypoints = []
         if swath_width_m <= 0 or grid_width_m <= 0 or grid_height_m <= 0:
             return waypoints
@@ -726,6 +857,93 @@ class MavlinkController:
             )
         return self.upload_mission(waypoints_data_for_upload)
 
+    def set_altitude(self, altitude_m):
+        # Change the current altitude of the drone.
+        if not self.is_connected():
+            print("MAVLink: Not connected. Cannot set altitude.")
+            return False
+
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE,
+                0,
+                float(altitude_m), 0, 0, 0, 0, 0, 0
+            )
+            ack = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
+            if ack and ack.command == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                print(f"MAVLink: Altitude change to {altitude_m} accepted via DO_CHANGE_ALTITUDE.")
+                return True
+            print(f"MAVLink: DO_CHANGE_ALTITUDE not accepted or no ACK: {ack}. Falling back to position target...")
+        except Exception as e:
+            print(f"MAVLink: Error issuing DO_CHANGE_ALTITUDE: {e}. Falling back to position target...")
+
+        print("MAVLink: Setting mode to GUIDED...")
+        if not self.set_mode("GUIDED"):
+            print("MAVLink: Failed to set GUIDED mode. Cannot change altitude.")
+            return False
+
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                0,
+                mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
+                200000,  
+                0, 0, 0, 0, 0
+            )
+        except Exception:
+            pass
+
+        print("MAVLink: Waiting for current position...")
+        current_pos = None
+        for _ in range(20):  
+            msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=0.2)
+            if msg:
+                current_pos = msg
+                break
+        if not current_pos:
+            try:
+                current_pos = self.master.messages.get('GLOBAL_POSITION_INT')
+            except Exception:
+                current_pos = None
+        if not current_pos:
+            print("MAVLink: Could not get current position. Altitude change aborted.")
+            return False
+
+        print(f"MAVLink: Commanding altitude change to {altitude_m}m...")
+        try:
+            type_mask = (
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE |
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE |
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE |
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE |
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE |
+                mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
+            )
+            self.master.mav.set_position_target_global_int_send(
+                0,
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                type_mask,
+                int(current_pos.lat),
+                int(current_pos.lon),
+                float(altitude_m),
+                0, 0, 0,
+                0, 0, 0,
+                0, 0
+            )
+            print(f"MAVLink: Altitude command sent. Drone should be moving to {altitude_m}m.")
+            return True
+        except Exception as e:
+            print(f"MAVLink: Error sending set_position_target_global_int: {e}")
+            return False
+            
 # =========================
 # ====== MESSAGES =========
 # =========================
@@ -796,6 +1014,11 @@ class MsgCommandFlyTo(MsgBase):
     lon: float
     altitude_m: float = DEFAULT_WAYPOINT_ALTITUDE
     target_desc: Optional[str] = None
+
+# New message for altitude change
+@dataclass
+class MsgCommandSetAltitude(MsgBase):
+    altitude_m: float
 
 @dataclass
 class MsgMavStatus(MsgBase):
@@ -1154,12 +1377,14 @@ class MavlinkWorker(WorkerThread):
         if not self.controllers:
             self._speak("Fatal error: No MAVLink agents connected.")
             return
+        # Choose initial active agent: prefer configured default, otherwise first connected.
         self.active_agent_id = candidate_active if candidate_active in self.controllers else next(iter(self.controllers))
-        self._speak(f"Active agent: {self.active_agent_id}")
+        self._speak(f"{self.active_agent_id}, is selected")
 
         def _decode_statustext(msg) -> str:
             try:
                 raw = msg.text
+                # Normalize to text: pymavlink may return bytes or str depending on dialect/version.
                 return raw.decode() if hasattr(raw, 'decode') else str(raw)
             except Exception:
                 return ""
@@ -1207,15 +1432,80 @@ class MavlinkWorker(WorkerThread):
         def _handle_found(source_agent_id: str, lat: float, lon: float):
             # When a source agent reports a found target, dispatch another available agent (if any) to verify.
             self._speak(f"Agent {source_agent_id} reported a target at {lat:.6f}, {lon:.6f}.")
+            # Set the reporting agent to LOITER mode and complete its mission if possible
+            source_ctrl = self.controllers.get(source_agent_id)
+            if source_ctrl and source_ctrl.is_connected():
+                # Switch to GUIDED mode and send a position hold at current lat/lon/alt
+                if source_ctrl.set_mode("GUIDED"):
+                    self._speak(f"{source_agent_id} set to GUIDED mode after finding target.")
+                    try:
+                        msg = source_ctrl.master.recv_match(type=["GLOBAL_POSITION_INT", "VFR_HUD"], blocking=True, timeout=2)
+                        if msg and msg.get_type() == "GLOBAL_POSITION_INT":
+                            lat_deg = float(getattr(msg, "lat", 0)) / 1e7
+                            lon_deg = float(getattr(msg, "lon", 0)) / 1e7
+                            alt_m = float(getattr(msg, "alt", 0)) / 1000.0
+                        elif msg and msg.get_type() == "VFR_HUD":
+                            lat_deg = lat
+                            lon_deg = lon
+                            alt_m = float(getattr(msg, "alt", 0))
+                        else:
+                            lat_deg = lat
+                            lon_deg = lon
+                            alt_m = DEFAULT_WAYPOINT_ALTITUDE
+                        # Ensure altitude is at least 10m above ground
+                        safe_alt = max(alt_m, 10.0)
+                        source_ctrl.master.mav.command_long_send(
+                            source_ctrl.master.target_system,
+                            source_ctrl.master.target_component,
+                            mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                            0,  # confirmation
+                            0,  # hold time
+                            0,  # acceptance radius
+                            0,  # pass through
+                            lat_deg,  # latitude
+                            lon_deg,  # longitude
+                            safe_alt, # altitude
+                            0         # yaw
+                        )
+                        print(f"Sent GUIDED position hold at {lat_deg},{lon_deg},{safe_alt}m.")
+                    except Exception as e:
+                        print(f"Failed to send GUIDED position hold: {e}")
+                else:
+                    self._speak(f"Failed to set {source_agent_id} to GUIDED mode.")
+                # Optionally, send a mission complete command if supported
+                try:
+                    source_ctrl.master.mav.mission_ack_send(
+                        source_ctrl.master.target_system,
+                        source_ctrl.master.target_component,
+                        mavutil.mavlink.MAV_MISSION_ACCEPTED,
+                        mavutil.mavlink.MAV_MISSION_TYPE_MISSION
+                    )
+                except Exception:
+                    pass
 
-            # === MODIFICATION START ===
-            # Find the first available agent that is NOT the source agent
+            # Choose a verifying agent: first connected controller that's not the reporter
+            # and not currently busy with a Lifeguard-dispatched mission.
             verify_agent_id = None
             for agent_id, controller in self.controllers.items():
-                if agent_id != source_agent_id and controller and controller.is_connected():
-                    verify_agent_id = agent_id
-                    break  # Found a suitable verifier, stop looking
-            # === MODIFICATION END ===
+                if agent_id == source_agent_id:
+                    continue
+                if not controller or not controller.is_connected():
+                    continue
+                # Skip agents on missions we dispatched (tracked via 'lifeguard_mission_active').
+                if getattr(controller, 'lifeguard_mission_active', False):
+                    # If agent is in AUTO or GUIDED and lifeguard_mission_active is True, skip
+                    try:
+                        mode = None
+                        if hasattr(controller.master, 'flightmode'):
+                            mode = controller.master.flightmode
+                        elif hasattr(controller.master, 'mode'):
+                            mode = controller.master.mode
+                        if mode and mode.upper() in ["AUTO", "GUIDED"]:
+                            continue
+                    except Exception:
+                        continue
+                verify_agent_id = agent_id
+                break
 
             if not verify_agent_id:
                 self._speak("No other agents are available to verify.")
@@ -1224,29 +1514,40 @@ class MavlinkWorker(WorkerThread):
             verifier = self.controllers.get(verify_agent_id)
             self._speak(f"Dispatching {verify_agent_id} to verify.")
             try:
-                # Upload a simple fly-to mission to the reported location
-                wp = [
-                    (lat, lon, DEFAULT_WAYPOINT_ALTITUDE,
-                     mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0.0, 10.0, 0.0, float('nan'))
-                ]
-                ok = verifier.upload_mission(wp)
+                # Mark this agent as busy with a lifeguard.py mission
+                setattr(verifier, 'lifeguard_mission_active', True)
+                # Upload a 50m grid search at the FOUND coordinates, at a slightly lower altitude
+                grid_size_m = 50
+                verify_altitude = DEFAULT_WAYPOINT_ALTITUDE - 5  # Lower by 5 meters to reduce collision risk
+                ok = verifier.generate_and_upload_search_grid_mission(
+                    center_lat=lat,
+                    center_lon=lon,
+                    grid_size_m=grid_size_m,
+                    swath_width_m=DEFAULT_SWATH_WIDTH_M,
+                    altitude_m=verify_altitude
+                )
                 if not ok:
-                    self._speak(f"Failed to upload verification waypoint to {verify_agent_id}.")
+                    self._speak(f"Failed to upload verification grid to {verify_agent_id}.")
+                    setattr(verifier, 'lifeguard_mission_active', False)
                     return
                 if verifier.set_mode("AUTO"):
                     time.sleep(1)
                     if verifier.arm_vehicle():
                         time.sleep(1)
                         if verifier.start_mission():
-                            self._speak(f"{verify_agent_id} dispatched to verify target location.")
+                            self._speak(f"{verify_agent_id} dispatched to verify target location with a 50 meter grid search.")
                         else:
                             self._speak(f"{verify_agent_id} failed to start mission.")
+                            setattr(verifier, 'lifeguard_mission_active', False)
                     else:
                         self._speak(f"{verify_agent_id} failed to arm.")
+                        setattr(verifier, 'lifeguard_mission_active', False)
                 else:
                     self._speak(f"{verify_agent_id} failed to set AUTO mode.")
+                    setattr(verifier, 'lifeguard_mission_active', False)
             except Exception as e:
                 print(f"[MAV] Verification dispatch error: {e}")
+                setattr(verifier, 'lifeguard_mission_active', False)
 
         while not self.stopped():
             try:
@@ -1327,10 +1628,15 @@ class MavlinkWorker(WorkerThread):
                             self._speak("Failed to start mission.")
                     else:
                         self._speak("Failed to arm vehicle.")
+                        self._speak("Failed to set AUTO mode.")
+            elif isinstance(msg, MsgCommandSetAltitude):
+                self._speak(f"Setting altitude to {msg.altitude_m} meters.")
+                if ctrl.set_altitude(msg.altitude_m):
+                    self._speak(f"Altitude set to {msg.altitude_m} meters.")
                 else:
-                    self._speak("Failed to set AUTO mode.")
-            # After processing any command/action, poll for incoming STATUSTEXT updates.
-            _poll_statustext_all()
+                    self._speak("Failed to set altitude.")
+    # Final quick poll for STATUSTEXT updates before shutdown.
+        _poll_statustext_all()
         # Cleanup: try to put vehicles into GUIDED mode for a safer operator handoff,
         # then close the MAVLink connections.
         for aid, ctrl in self.controllers.items():
@@ -1427,6 +1733,14 @@ class Coordinator(WorkerThread):
             self.mav_outbox.put(MsgSelectAgent(agent_id=new_agent))
             return
 
+        if intent == "SET_AGENT_ALTITUDE":
+            altitude_m = entities.get("altitude_meters")
+            if altitude_m is None:
+                self._speak("No altitude specified.")
+                return
+            self.mav_outbox.put(MsgCommandSetAltitude(altitude_m=altitude_m))
+            return
+
         parsed_gps = None
         if "latitude" in entities and "longitude" in entities:
             parsed_gps = {"latitude": entities["latitude"], "longitude": entities["longitude"]}
@@ -1471,7 +1785,7 @@ class Coordinator(WorkerThread):
     # Main loop: process system messages and coordinate subsystem actions.
     # Set initial capture mode and greet the operator.
         self._set_capture_mode(CaptureMode.COMMAND)
-        self._speak("System initialized. Press and hold space to speak. ESC to exit.")
+        self._speak("LIFEGUARD is initialized!. Press and hold space to speak. Press escape to exit.")
         while not self.stopped():
             try:
                 msg = self.inbox.get(timeout=0.2)
