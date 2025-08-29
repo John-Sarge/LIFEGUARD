@@ -175,6 +175,7 @@ def extract_altitude_from_text(text):
         "eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
         "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|point|and"
     )
+    NUMBER_WORDS = NUMBER_WORDS.replace("\n", "")  # Remove any newlines
     number_word_pattern = rf'(?:{NUMBER_WORDS}| |-)+'
     regex = rf'altitude\s*(to|is|at)?\s*((?:\d+(?:\s*-\s*\d+)?|{number_word_pattern}))'
     match = re.search(regex, text)
