@@ -178,7 +178,7 @@ def extract_altitude_from_text(text):
         for d in digit_matches:
             try:
                 numbers.append(int(d))
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         # Try to extract number words (split on 'to', 'and', etc.)
         parts = re.split(r'\bto\b|\band\b|,', candidate)
