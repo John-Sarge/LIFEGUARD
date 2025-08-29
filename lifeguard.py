@@ -538,7 +538,7 @@ class NaturalLanguageUnderstanding:
                                 last = 1
                             last *= int(val)
                         else:
-                            last += val
+                            last += int(val)
                     else:
                         if last:
                             total += last
