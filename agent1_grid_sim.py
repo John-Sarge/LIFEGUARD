@@ -199,6 +199,9 @@ def simulate_found_midway(connection_string):
         if num_waypoints > 4:
             start_idx = math.ceil(num_waypoints * 0.25)
             end_idx = math.floor(num_waypoints * 0.75) - 1
+            # Clamp indices to valid bounds
+            start_idx = max(0, min(start_idx, len(all_seqs) - 1))
+            end_idx = max(0, min(end_idx, len(all_seqs) - 1))
             candidates = all_seqs[start_idx:end_idx+1] if end_idx >= start_idx else all_seqs
             print(f"Middle-half candidates: {candidates}")
             if candidates:
@@ -214,7 +217,14 @@ def simulate_found_midway(connection_string):
         if num_waypoints > 4:
             start_idx = math.ceil(num_waypoints * 0.25)
             end_idx = math.floor(num_waypoints * 0.75) - 1
-            candidates = list(range(start_idx, end_idx + 1))
+            # Clamp indices to valid bounds
+            start_idx = max(0, min(start_idx, num_waypoints - 1))
+            end_idx = max(0, min(end_idx, num_waypoints - 1))
+            # Ensure candidates is non-empty and indices are valid
+            if end_idx >= start_idx:
+                candidates = list(range(start_idx, end_idx + 1))
+            else:
+                candidates = list(range(num_waypoints))
             print(f"Middle-half candidates: {candidates}")
             if candidates:
                 target_idx = random.choice(candidates)
@@ -252,4 +262,3 @@ def simulate_found_midway(connection_string):
 if __name__ == "__main__":
     connection_string = "tcp:10.24.5.232:5763"  # Change per SITL instance
     simulate_found_midway(connection_string)
-
