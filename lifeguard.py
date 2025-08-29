@@ -1649,7 +1649,8 @@ class MavlinkWorker(WorkerThread):
                     self._speak(f"Altitude set to {msg.altitude_m} meters.")
                 else:
                     self._speak("Failed to set altitude.")
-    # Final quick poll for STATUSTEXT updates before shutdown.
+        
+        # Final quick poll for STATUSTEXT updates before shutdown.
         _poll_statustext_all()
         # Cleanup: try to put vehicles into GUIDED mode for a safer operator handoff,
         # then close the MAVLink connections.
