@@ -1526,9 +1526,11 @@ class MavlinkWorker(WorkerThread):
 
             verifier = self.controllers.get(verify_agent_id)
             self._speak(f"Dispatching {verify_agent_id} to verify.")
+            def deactivate_lifeguard_mission(verifier):
+                setattr(verifier, 'lifeguard_mission_active', False)
+
+            setattr(verifier, 'lifeguard_mission_active', True)
             try:
-                # Mark this agent as busy with a lifeguard.py mission
-                setattr(verifier, 'lifeguard_mission_active', True)
                 # Upload a 50m grid search at the FOUND coordinates, at a slightly lower altitude
                 grid_size_m = 50
                 verify_altitude = DEFAULT_WAYPOINT_ALTITUDE - 5  # Lower by 5 meters to reduce collision risk
@@ -1541,7 +1543,6 @@ class MavlinkWorker(WorkerThread):
                 )
                 if not ok:
                     self._speak(f"Failed to upload verification grid to {verify_agent_id}.")
-                    setattr(verifier, 'lifeguard_mission_active', False)
                     return
                 if verifier.set_mode("AUTO"):
                     time.sleep(1)
@@ -1551,16 +1552,18 @@ class MavlinkWorker(WorkerThread):
                             self._speak(f"{verify_agent_id} dispatched to verify target location with a 50 meter grid search.")
                         else:
                             self._speak(f"{verify_agent_id} failed to start mission.")
-                            setattr(verifier, 'lifeguard_mission_active', False)
+                            deactivate_lifeguard_mission(verifier)
                     else:
                         self._speak(f"{verify_agent_id} failed to arm.")
-                        setattr(verifier, 'lifeguard_mission_active', False)
+                        deactivate_lifeguard_mission(verifier)
                 else:
                     self._speak(f"{verify_agent_id} failed to set AUTO mode.")
-                    setattr(verifier, 'lifeguard_mission_active', False)
+                    deactivate_lifeguard_mission(verifier)
             except Exception as e:
                 print(f"[MAV] Verification dispatch error: {e}")
-                setattr(verifier, 'lifeguard_mission_active', False)
+            finally:
+                deactivate_lifeguard_mission(verifier)
+
 
         while not self.stopped():
             try:
