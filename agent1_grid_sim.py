@@ -203,8 +203,6 @@ def simulate_found_midway(connection_string):
             start_idx = max(0, min(start_idx, num_waypoints - 1))
             end_idx = max(0, min(end_idx, num_waypoints - 1))
             # Clamp indices to valid bounds
-            start_idx = max(0, min(start_idx, len(all_seqs) - 1))
-            end_idx = max(0, min(end_idx, len(all_seqs) - 1))
             candidates = all_seqs[start_idx:end_idx+1] if end_idx >= start_idx else all_seqs
             print(f"Middle-half candidates: {candidates}")
             if candidates:
