@@ -170,7 +170,12 @@ def extract_altitude_from_text(text):
     # Normalize text to lower case
     text = text.lower()
     # Try to find a number (digit or word) after 'altitude' in the text
-    match = re.search(r'altitude\s*(to|is|at)?\s*([a-zA-Z0-9\- ]+)', text)
+    match = re.search(
+        r'altitude\s*(to|is|at)?\s*((?:\d+(?:\s*-\s*\d+)?|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|'
+        r'eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|'
+        r'twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|point|and| |-)+))',
+        text
+    )
     numbers = []
     if match:
         candidate = match.group(2).strip()
