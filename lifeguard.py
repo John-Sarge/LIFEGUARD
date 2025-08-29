@@ -532,11 +532,24 @@ class NaturalLanguageUnderstanding:
             if alt_from_text is not None:
                 altitude_values = [alt_from_text]
             else:
-                # Try number words
+                # Try number words in altitude-related phrases only
+                def extract_altitude_phrase(text):
+                    # Look for phrases like "altitude <number>", "set altitude to <number>", etc.
+                    patterns = [
+                        r"(?:altitude|set altitude|change altitude|update altitude)\s*(?:to|at|is|of)?\s*([A-Za-z\s\-]+|\d+)",
+                        r"(?:to|at|is|of)\s*([A-Za-z\s\-]+|\d+)\s*(?:meters|meter|m)?\b"
+                    ]
+                    for pat in patterns:
+                        m = re.search(pat, text, re.IGNORECASE)
+                        if m:
+                            return m.group(1)
+                    return None
                 try:
-                    num = w2n.word_to_num(text)
-                    if num > 0:
-                        altitude_values = [num]
+                    phrase = extract_altitude_phrase(text)
+                    if phrase:
+                        num = w2n.word_to_num(phrase)
+                        if num > 0:
+                            altitude_values = [num]
                 except Exception:
                     pass
 
