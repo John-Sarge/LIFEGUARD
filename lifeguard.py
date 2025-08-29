@@ -852,6 +852,9 @@ class MavlinkController:
             )
         return self.upload_mission(waypoints_data_for_upload)
 
+    # Timeout (in seconds) to wait for COMMAND_ACK after sending DO_CHANGE_ALTITUDE
+    ACK_TIMEOUT_SECONDS = 3
+
     def set_altitude(self, altitude_m):
         # Change the current altitude of the drone.
         if not self.is_connected():
@@ -869,7 +872,7 @@ class MavlinkController:
             # Wait for the correct ACK for DO_CHANGE_ALTITUDE, ignoring unrelated ACKs until timeout
             start_time = time.time()
             ack = None
-            while time.time() - start_time < 3:
+            while time.time() - start_time < self.ACK_TIMEOUT_SECONDS:
                 ack_candidate = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=0.5)
                 if ack_candidate and hasattr(ack_candidate, 'command'):
                     if ack_candidate.command == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE:
