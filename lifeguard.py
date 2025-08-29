@@ -467,8 +467,11 @@ class NaturalLanguageUnderstanding:
             entity_data = {"text": ent.text, "label": ent.label_, "start": ent.start_char, "end": ent.end_char}
             if ent.label_ == "ALTITUDE_SET":
                 try:
-                    altitude_str = ent.text
-                    entity_data["altitude_value"] = float(altitude_str) if '.' in altitude_str else int(altitude_str)
+                    # Extract numeric value from entity text, e.g. 'set altitude 100' or 'altitude is 50'
+                    num_match = re.search(r"\d+(\.\d+)?", ent.text)
+                    if num_match:
+                        num_str = num_match.group(0)
+                        entity_data["altitude_value"] = float(num_str) if '.' in num_str else int(num_str)
                 except Exception:
                     pass
             if ent.label_ == "LOCATION_GPS_COMPLEX" and Span.has_extension("parsed_gps_coords"):
