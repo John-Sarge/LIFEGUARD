@@ -526,34 +526,13 @@ class NaturalLanguageUnderstanding:
                 altitude_values = [alt_from_text]
             else:
                 # Try number words
-                number_words = {
-                    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-                    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
-                    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-                    "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
-                    "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
-                    "hundred": 100, "thousand": 1000
-                }
-                words = text.lower().replace('-', ' ').split()
-                total = 0
-                last = 0
-                for word in words:
-                    if word in number_words:
-                        val = number_words[word]
-                        if val == 100 or val == 1000:
-                            if last == 0:
-                                last = 1
-                            last *= val
-                        else:
-                            last += val
-                    else:
-                        if last:
-                            total += last
-                            last = 0
-                total += last
-                if total > 0:
-                    altitude_values = [total]
+                try:
+                    from word2number import w2n
+                    num = w2n.word_to_num(text)
+                    if num > 0:
+                        altitude_values = [num]
+                except Exception:
+                    pass
 
         if parsed_gps_coords:
             entities_payload.update(parsed_gps_coords)
