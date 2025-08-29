@@ -1562,7 +1562,7 @@ class MavlinkWorker(WorkerThread):
             except Exception as e:
                 print(f"[MAV] Verification dispatch error: {e}")
             finally:
-                deactivate_lifeguard_mission(verifier)
+                pass
 
 
         while not self.stopped():
