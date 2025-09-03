@@ -88,12 +88,18 @@ Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUES
 ### Minimum Requirements
 
   - Python 3.8+
-  - [Vosk](https://alphacephei.com/vosk/) version 0.3.45 (STT engine and English model)
-  - [spaCy](https://spacy.io/) version 3.0.0 with `en_core_web_sm` model
+  - [Vosk](https://alphacephei.com/vosk/) version 0.3.45
+  - [spaCy](https://spacy.io/) version 3.7.5 with `en_core_web_sm` model
   - [PyAudio](https://people.csail.mit.edu/hubert/pyaudio/) (microphone input)
   - [noisereduce](https://github.com/timsainb/noisereduce)
   - [pymavlink](https://github.com/ArduPilot/pymavlink)
-  - numpy, scipy, pynput, pyttsx3, word2number
+  - [lat-lon-parser](https://pypi.org/project/lat-lon-parser/)
+  - [numpy](https://numpy.org/) <2.0
+  - [scipy](https://scipy.org/) <1.14
+  - [pynput](https://pypi.org/project/pynput/)
+  - [pyttsx3](https://pypi.org/project/pyttsx3/)
+  - [statemachine](https://pypi.org/project/statemachine/)
+  - [word2number](https://pypi.org/project/word2number/)
 
 ### Installation Steps
 
@@ -156,10 +162,10 @@ Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUES
 2.  **Run the Application**
 
   ```bash
-  python lifeguard.py
+  python -m lifeguard
   ```
 
-  The system will initialize and indicate that it is ready for voice commands.
+  Ensure your PYTHONPATH includes `src/` or install the package in editable mode.
 
 3.  **Issue a Voice Command**
 
@@ -183,11 +189,11 @@ Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUES
 
 ## Customization and Extensibility
 
-The system is designed to be modular and extensible.
+Key extension points:
 
-  - **Add New Commands:** Extend the NLU entity patterns and intent-handling logic in `lifeguard.py` to support new command types (e.g., "return to launch," "follow target").
-  - **Configure Agents:** Modify the `AGENT_CONNECTION_CONFIGS` dictionary in `lifeguard.py` to add, remove, or update connection strings for different autonomous vehicles.
-  - **Tune Parameters:** Adjust grid search parameters, default flight altitudes, and audio processing settings within the main script to match specific operational requirements.
+  - **Commands & NLU:** Update patterns/logic in `src/lifeguard/components/nlu.py`.
+  - **Agents:** Edit `src/lifeguard/config/settings.py` to configure connection strings.
+  - **Audio & STT:** Tune pre-processing in `src/lifeguard/utils/audio_processing.py` and STT in `src/lifeguard/components/stt.py`.
 
 -----
 
@@ -206,6 +212,39 @@ A small simulator script, `agent1_grid_sim.py`, is included to exercise the LIFE
   - How it works: It infers mission readiness from STATUSTEXT, can pull the mission from the vehicle to get waypoint coordinates, waits for `MISSION_ITEM_REACHED`, and then emits the `FOUND` message.
   - Why it’s useful: LIFEGUARD listens for `FOUND:` messages to automatically dispatch another available agent to verify the reported location.
   - Quick start: Adjust the connection string at the bottom of `agent1_grid_sim.py` for your SITL/vehicle (e.g., `tcp:127.0.0.1:5763`) and run it in parallel while following the normal README flow for `lifeguard.py`.
+
+## Packaging and Deployment
+
+### Build and Install as a Python Package
+
+1. Ensure you have `setuptools` and `wheel` installed:
+  ```bash
+  pip install setuptools wheel
+  ```
+
+2. Build the package:
+  ```bash
+  python -m build
+  ```
+
+3. Install the package locally:
+  ```bash
+  pip install dist/lifeguard-*.whl
+  ```
+
+### Publish to PyPI (optional)
+
+1. Ensure you have `twine` installed:
+  ```bash
+  pip install twine
+  ```
+
+2. Upload the package:
+  ```bash
+  twine upload dist/*
+  ```
+
+Refer to [PyPI packaging guide](https://packaging.python.org/tutorials/packaging-projects/) for more details.
 
 ## Acknowledgments
 
