@@ -1,5 +1,5 @@
 [project]
-name = "lifeguard"
+name = "LIFEGUARD"
 version = "0.1.0"
 description = "Lightweight Intent-Focused Engine for Guidance in Unmanned Autonomous Rescue Deployments"
 authors = [ { name = "John Seargeant" } ]
