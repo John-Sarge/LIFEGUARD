@@ -24,7 +24,7 @@ LIFEGUARD is a Python-based system that interprets spoken natural language comma
   - **Waypoint & Grid Search:** Translates high-level intent into actionable commands, including waypoint navigation and automatic generation of grid search patterns.
   - **Audio Preprocessing:** Employs noise reduction and band-pass filtering for reliable command recognition in noisy field environments.
   - **Interactive Confirmation:** A critical safety feature that prompts the operator for confirmation before dispatching commands to autonomous units.
-  - **Push-to-Talk (PTT):** Uses the spacebar as a push-to-talk trigger to prevent accidental activation, with ESC for a clean system shutdown.
+  - **Push-to-Talk (PTT):** Via GUI button (press & hold). (Legacy spacebar handler replaced in current GUI launcher.)
   - **Decoupled Subsystems:** Audio Input/PTT, STT, NLU, MAVLink I/O, and TTS Output run in dedicated threads and communicate via thread-safe queues for improved reliability and responsiveness.
   - **Modular Message-Passing Architecture:** Improves reliability, thread safety, and responsiveness for mission-critical operations.
   - **Cross-Platform:** Works on both Windows and Linux operating systems.
@@ -37,7 +37,7 @@ The LIFEGUARD system uses a decoupled, multi-threaded message-passing architectu
 
 ### Operational Workflow
 
-1.  **Push-to-Talk:** The operator presses and holds the spacebar to begin recording a command. The system only listens while this key is held.
+1.  **Push-to-Talk:** The operator presses and holds the GUI "Push to Talk" button. Audio is captured only while held.
 2.  **Audio Preprocessing:** The captured audio is processed for noise reduction and bandpass filtering to isolate speech frequencies.
 3.  **Speech Recognition:** The cleaned audio is transcribed into text in real-time by the offline Vosk STT engine.
 4.  **Intent Extraction:** spaCy NLU parses the transcribed text to identify intent and extract entities, including spoken number conversion.
@@ -56,7 +56,8 @@ The system is built on a foundation of powerful, open-source libraries chosen fo
 | **spaCy** | Natural Language Understanding (NLU) & Entity Extraction |
 | **pymavlink** | MAVLink Protocol Communication with Autonomous Units |
 | **noisereduce** | Real-time Audio Noise Reduction |
-| **pynput** | Keyboard Event Handling (Push-to-Talk & Shutdown) |
+| **pynput** | (Legacy) keyboard event handling (may be unused with GUI button) |
+| **customtkinter / Pillow** | GUI framework and image assets |
 | **Threading/Queues** | Decoupled subsystem communication and message routing |
 | **PyAudio** | Microphone Audio Input Stream |
 | **scipy, numpy** | Signal Processing & Numerical Operations |
@@ -71,15 +72,15 @@ The NLU model is trained to recognize a specific grammar of commands tailored fo
 ### Command Grammar Examples
 
 | Voice Command Example | Extracted Intent | Key Entities Extracted |
-| :--------------------------------------------------------------------------- | :------------------ | :------------------------------------------------------------- |
-| "Search a **100 meter** grid at latitude **38.99** longitude **-76.48**." | `GRID_SEARCH` | `GRID_SIZE: 100`, `LATITUDE: 38.99`, `LONGITUDE: -76.48` |
-| "Search at latitude **38.99** longitude **-76.48** for a person in a life ring." | `WAYPOINT_SEARCH` | `LATITUDE: 38.99`, `LONGITUDE: -76.48`, `TARGET: person in a life ring` |
-| "Select **drone two**." | `SELECT_AGENT` | `AGENT_ID: 2` |
-| "Set altitude to **fifty meters**." | `SET_ALTITUDE` | `ALTITUDE: 50` |
-| "Confirm command." / "Yes." | `CONFIRM_ACTION` | `CONFIRMATION: True` |
-| "Cancel command." / "No." | `CANCEL_ACTION` | `CONFIRMATION: False` |
+| :--------------------------------------------------------------------------- | :------------------------------ | :------------------------------------------------------------- |
+| "Search a 100 meter grid at latitude 38.99 longitude -76.48." | `REQUEST_GRID_SEARCH` | `grid_size_meters=100`, `latitude`, `longitude` |
+| "Search at latitude 38.99 longitude -76.48 for a person in a life ring." | `COMBINED_SEARCH_AND_TARGET` or `REQUEST_SEARCH_AT_LOCATION` | `latitude`, `longitude`, `target_description_full` |
+| "Fly to latitude 38.99 longitude -76.48." | `REQUEST_FLY_TO` | `latitude`, `longitude` |
+| "Select drone two." | `SELECT_AGENT` | `selected_agent_id=agent2` |
+| "Set altitude to fifty meters." | `SET_AGENT_ALTITUDE` | `altitude_meters=50` |
+| "Yes." / "No." (after prompt) | (Handled by confirmation mode) | (No separate intent label) |
 
-Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUEST_SEARCH_AT_LOCATION`, and `COMBINED_SEARCH_AND_TARGET`. Yes/No confirmations are handled by a coordinator confirmation mode rather than a separate intent.
+Note: Implemented intents now include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUEST_SEARCH_AT_LOCATION`, `REQUEST_FLY_TO`, `COMBINED_SEARCH_AND_TARGET`, `SET_AGENT_ALTITUDE`, and `PROVIDE_TARGET_DESCRIPTION` (fallback when only a target description is given). Yes/No confirmations are handled by a coordinator confirmation mode (no explicit confirmation intent constant).
 
 -----
 
@@ -93,13 +94,13 @@ Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUES
   - [PyAudio](https://people.csail.mit.edu/hubert/pyaudio/) (microphone input)
   - [noisereduce](https://github.com/timsainb/noisereduce)
   - [pymavlink](https://github.com/ArduPilot/pymavlink)
-  - [lat-lon-parser](https://pypi.org/project/lat-lon-parser/)
   - [numpy](https://numpy.org/) <2.0
   - [scipy](https://scipy.org/) <1.14
-  - [pynput](https://pypi.org/project/pynput/)
+  - [pynput](https://pypi.org/project/pynput/) (optional / legacy)
   - [pyttsx3](https://pypi.org/project/pyttsx3/)
-  - [statemachine](https://pypi.org/project/statemachine/)
   - [word2number](https://pypi.org/project/word2number/)
+  - [customtkinter](https://github.com/TomSchimansky/CustomTkinter) (GUI)
+  - [Pillow](https://python-pillow.org/) (logo/icon) 
 
 ### Installation Steps
 
@@ -157,22 +158,29 @@ Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUES
 
       - Connect your MAVLink-compatible vehicle(s) via USB, telemetry radio, or network.
       - Alternatively, start a simulator such as SITL or Gazebo.
-      - Update the `AGENT_CONNECTION_CONFIGS` dictionary in `lifeguard.py` with the correct connection strings for your hardware or simulator setup.
+  - Edit `config.json` (auto-created on first run) or use the GUI Settings dialog (Agents tab) to adjust connection strings.
 
 2.  **Run the Application**
+
+  GUI launcher (recommended for current PTT workflow):
+
+  ```bash
+  python run_gui.py
+  ```
+
+  Headless/CLI (legacy entry point):
 
   ```bash
   python -m lifeguard
   ```
 
-  Ensure your PYTHONPATH includes `src/` or install the package in editable mode.
+  Ensure your PYTHONPATH includes `src/` or install in editable mode (`pip install -e .`).
 
 3.  **Issue a Voice Command**
 
-      - Press and hold the **spacebar**.
-      - Speak a command clearly into the microphone.
-      - Example: "Search a 100 meter grid at latitude 41.37 longitude -72.09."
-      - Release the spacebar.
+  - Press and hold the GUI **Push to Talk** button.
+  - Speak a command clearly (e.g., "Search a 100 meter grid at latitude 41.37 longitude -72.09.").
+  - Release the button.
 
 4.  **Confirm the Intent**
 
@@ -192,7 +200,7 @@ Note: Implemented intents include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `REQUES
 Key extension points:
 
   - **Commands & NLU:** Update patterns/logic in `src/lifeguard/components/nlu.py`.
-  - **Agents:** Edit `src/lifeguard/config/settings.py` to configure connection strings.
+  - **Agents:** Adjust via `config.json` (or GUI Settings); environment overrides also supported via `settings.py`.
   - **Audio & STT:** Tune pre-processing in `src/lifeguard/utils/audio_processing.py` and STT in `src/lifeguard/components/stt.py`.
 
 -----

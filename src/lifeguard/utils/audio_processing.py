@@ -3,7 +3,7 @@ import numpy as np
 import noisereduce as nr
 from scipy.signal import butter, lfilter
 import logging
-from lifeguard.config import settings # --- ADDED ---
+from lifeguard.config import settings
 
 def apply_noise_reduction(audio_data_int16, sample_rate):
     logger = logging.getLogger(__name__)
