@@ -7,17 +7,21 @@ from lifeguard.utils.audio_processing import apply_noise_reduction, apply_bandpa
 from lifeguard.system.exceptions import STTError
 
 class SpeechToText:
-	"""
-	Handles both batch and streaming speech recognition using Vosk.
-	"""
+	"""Batch and streaming speech recognition using Vosk."""
 	def __init__(self, model_path, sample_rate):
 		self.logger = logging.getLogger(__name__)
 		self.sample_rate = sample_rate
-		if not os.path.exists(model_path):
-			self.logger.error(f"Vosk model not found at {model_path}.")
-			raise STTError(f"Vosk model not found at {model_path}")
+		import sys
+		import os
+		actual_model_path = model_path
+		if getattr(sys, 'frozen', False):
+			base = sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(sys.executable)
+			actual_model_path = os.path.join(base, 'vosk_models', 'vosk-model-small-en-us-0.15')
+		if not os.path.exists(actual_model_path):
+			self.logger.error(f"Vosk model not found at {actual_model_path}.")
+			raise STTError(f"Vosk model not found at {actual_model_path}")
 		try:
-			self.model = vosk.Model(model_path)
+			self.model = vosk.Model(actual_model_path)
 		except Exception as e:
 			self.logger.error(f"Failed to load Vosk model: {e}")
 			raise STTError(f"Failed to load Vosk model: {e}")

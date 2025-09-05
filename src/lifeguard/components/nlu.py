@@ -1,6 +1,8 @@
-"""spaCy-powered NLU: extracts intent and entities from transcribed text."""
+"""spaCy-powered NLU: extract intents and entities from transcribed text."""
 import re
 import spacy
+import sys
+import os
 import logging
 from spacy.tokens import Doc, Span
 from spacy.language import Language
@@ -77,16 +79,70 @@ class LatLonEntityRecognizer:
 		return doc
 
 class NaturalLanguageUnderstanding:
-    def __init__(self, spacy_model_name):
+    """Thin wrapper around a spaCy pipeline configured for SAR intents/entities."""
+    def __init__(self, spacy_model_name="en_core_web_sm"):
         self.logger = logging.getLogger(__name__)
         try:
-            self.nlp = spacy.load(spacy_model_name)
+            model_path = None
+
+            if getattr(sys, "frozen", False):
+                # Running from PyInstaller single-file bundle; model is bundled under _MEIPASS
+                base = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
+                root = os.path.join(base, "en_core_web_sm")
+
+                # Prefer the inner directory that contains config.cfg
+                cfg_candidates = []
+                meta_candidates = []
+                if os.path.isdir(root):
+                    for cur_root, dirs, files in os.walk(root):
+                        if "config.cfg" in files:
+                            cfg_candidates.append(cur_root)
+                        if "meta.json" in files:
+                            meta_candidates.append(cur_root)
+
+                if cfg_candidates:
+                    # Pick the shortest path with config.cfg (typically the inner model dir)
+                    model_path = sorted(cfg_candidates, key=len)[0]
+                elif meta_candidates:
+                    # Fallback: if only meta.json is present at root, search child dirs for config.cfg
+                    try:
+                        subdirs = [os.path.join(root, d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+                        for d in subdirs:
+                            if os.path.exists(os.path.join(d, "config.cfg")):
+                                model_path = d
+                                break
+                    except Exception:
+                        pass
+
+                if not model_path:
+                    raise OSError(
+                        f"Bundled spaCy model directory with config.cfg not found under '{root}'."
+                    )
+            else:
+                # Non-frozen: prefer package-based load; falls back to name-based load
+                try:
+                    import en_core_web_sm  # type: ignore
+                    self.nlp = en_core_web_sm.load()  # most robust in dev
+                    model_path = None  # informational only
+                except Exception:
+                    # Fallback to name-based load (requires model installed)
+                    self.nlp = spacy.load(spacy_model_name)
+                    model_path = spacy_model_name
+
+            # For frozen builds, load using the resolved model_path
+            if getattr(sys, "frozen", False):
+                self.logger.info(
+                    f"Loading spaCy model from bundled path: {model_path}"
+                )
+                self.nlp = spacy.load(model_path)
+
         except OSError as e:
-            self.logger.error(f"spaCy model '{spacy_model_name}' not found. Install it: python -m spacy download {spacy_model_name}")
-            raise NLUError(f"spaCy model '{spacy_model_name}' not found.") from e
-        except Exception as e:
-            self.logger.error(f"Unexpected error loading spaCy model: {e}")
-            raise NLUError(f"Unexpected error loading spaCy model: {e}")
+            self.logger.error(
+                f"spaCy model '{spacy_model_name}' not found. "
+                f"Detail: {e}. If running non-bundled, install with: "
+                f"python -m spacy download {spacy_model_name}"
+            )
+            raise NLUError(f"spaCy model '{spacy_model_name}' not found.")
         try:
             if "lat_lon_entity_recognizer" not in self.nlp.pipe_names:
                 self.nlp.add_pipe("lat_lon_entity_recognizer", after="ner" if self.nlp.has_pipe("ner") else None)
@@ -127,7 +183,7 @@ class NaturalLanguageUnderstanding:
             raise NLUError(f"Error configuring spaCy pipeline: {e}")
 
     def parse_command(self, text):
-        """Return dict: {text, intent, confidence, entities} for the input text."""
+        """Return a dict: {text, intent, confidence, entities} derived from input text."""
         try:
             doc = self.nlp(text)
         except Exception as e:

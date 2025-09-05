@@ -1,4 +1,4 @@
-"""MAVLink controller wrapper for connecting, uploading missions, and navigation commands."""
+"""MAVLink controller: connect, manage modes, upload missions, and simple navigation."""
 import math
 import time
 import logging
@@ -70,7 +70,7 @@ class MavlinkController:
 		if not self.is_connected():
 			return None
 		
-		# Request message if not streaming
+		# Ensure GLOBAL_POSITION_INT is streaming (best-effort)
 		try:
 			self.master.mav.command_long_send(
 				self.master.target_system, self.master.target_component,
@@ -455,7 +455,7 @@ class MavlinkController:
 		if not self.is_connected():
 			self.logger.error("MAVLink: Not connected. Cannot fly to location.")
 			return False
-		# Ensure GUIDED
+		# Ensure GUIDED mode before sending position target
 		if not self.set_mode("GUIDED"):
 			self.logger.error("MAVLink: Failed to set GUIDED mode. Cannot fly to location.")
 			return False
