@@ -2,27 +2,29 @@
     "agents": [
         {
             "name": "agent1",
-            "connection_string": "tcp:10.24.5.232:5762"
+            "connection_string": "tcp:10.24.5.232:5763"
         },
         {
             "name": "agent2",
-            "connection_string": "tcp:10.24.5.232:5772"
+            "connection_string": "tcp:10.24.5.232:5773"
         }
     ],
-    "mavlink": {
-        "baudrate": 57600,
-        "source_system_id": 255
-    },
     "mission": {
         "default_waypoint_altitude": 30.0,
-        "default_swath_width": 20.0
+        "default_swath_width": 5.0
     },
     "nlu": {
-        "spacy_model_name": "en_core_web_sm",
         "confidence_threshold": 0.7
+    },
+    "mavlink": {
+        "baudrate": 57600,
+        "source_system_id": 252
     },
     "audio": {
         "sample_rate": 16000,
         "read_chunk": 4096
+    },
+    "map": {
+        "database_only": true
     }
 }

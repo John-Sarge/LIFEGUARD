@@ -1,6 +1,4 @@
-"""
-Custom exception hierarchy for LIFEGUARD system.
-"""
+"""Custom exception hierarchy for LIFEGUARD system."""
 class LifeguardError(Exception):
     """Base exception for the LIFEGUARD application."""
     pass

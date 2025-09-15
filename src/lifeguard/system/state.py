@@ -1,4 +1,4 @@
-"""Message schema for inter-thread communication in LIFEGUARD."""
+"""Message schema for inter-thread communication in LIFEGUARD system."""
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, Any

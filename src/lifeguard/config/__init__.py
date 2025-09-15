@@ -1,1 +1,1 @@
-# config package init
+# Configuration package initializer

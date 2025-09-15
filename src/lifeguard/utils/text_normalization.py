@@ -1,4 +1,4 @@
-"""Text normalization: spoken numbers to digits, altitude extraction helpers."""
+"""Text normalization utilities: spoken numbers to digits, altitude extraction helpers."""
 import re
 from word2number import w2n
 import logging

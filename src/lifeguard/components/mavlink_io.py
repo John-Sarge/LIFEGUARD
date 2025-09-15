@@ -1,4 +1,4 @@
-"""MAVLink controller: connect, manage modes, upload missions, and simple navigation."""
+"""MAVLink controller: connect, manage modes, upload missions, and navigation for drones."""
 import math
 import time
 import logging
@@ -9,7 +9,7 @@ EARTH_RADIUS_METERS = 6378137.0
 
 
 class MavlinkController:
-	"""Controls a single drone via MAVLink (connect, mode, missions, altitude, fly-to)."""
+	"""Controls a single drone via MAVLink: connection, mode, missions, altitude, fly-to."""
 	def __init__(self, connection_string: str, baudrate: int | None = None, source_system_id: int = 255):
 		self.logger = logging.getLogger(__name__)
 		self.connection_string = connection_string
@@ -55,12 +55,51 @@ class MavlinkController:
 					f"MAVLink: Using target_system={self.master.target_system}, target_component={self.master.target_component}"
 				)
 				self.master.target_component = 1
+				self.start_position_stream()
 		except Exception as e:
 			self.logger.error(
 				f"MAVLink: EXCEPTION connect/wait_heartbeat on {self.connection_string}: {e}", exc_info=True
 			)
 			self.master = None
 			raise MavlinkError(f"Exception during MAVLink connection: {e}") from e
+
+	def start_position_stream(self, rate_hz: int = 2):
+		"""Requests the vehicle to stream GLOBAL_POSITION_INT at a specific rate."""
+		if not self.is_connected():
+			return
+
+		# Interval in microseconds (1,000,000 / Hz)
+		interval_us = int(1_000_000 / rate_hz)
+		self.logger.info(f"Requesting GLOBAL_POSITION_INT stream at {rate_hz} Hz from system {self.master.target_system}.")
+		try:
+			# Preferred: request specific message interval
+			self.master.mav.command_long_send(
+				self.master.target_system,
+				self.master.target_component,
+				mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+				0,  # confirmation
+				mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
+				interval_us,
+				0, 0, 0, 0, 0
+			)
+			# Fallback for older stacks: request legacy data streams
+			# These may map GLOBAL_POSITION_INT/GPS_RAW_INT into POSITION/EXTRA streams
+			self.master.mav.request_data_stream_send(
+				self.master.target_system,
+				self.master.target_component,
+				mavutil.mavlink.MAV_DATA_STREAM_POSITION,
+				max(1, int(rate_hz)),
+				1
+			)
+			self.master.mav.request_data_stream_send(
+				self.master.target_system,
+				self.master.target_component,
+				mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,
+				max(1, int(rate_hz)),
+				1
+			)
+		except Exception as e:
+			self.logger.error(f"Failed to request position stream(s): {e}")
 
 	def is_connected(self) -> bool:
 		return self.master is not None
@@ -69,28 +108,33 @@ class MavlinkController:
 		"""Fetches the current GLOBAL_POSITION_INT from the vehicle."""
 		if not self.is_connected():
 			return None
-		
-		# Ensure GLOBAL_POSITION_INT is streaming (best-effort)
+		# Best-effort ensure stream; non-blocking pattern to avoid starving other consumers
 		try:
 			self.master.mav.command_long_send(
-				self.master.target_system, self.master.target_component,
-				mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
-				mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 200000, # 200ms = 5Hz
-				0, 0, 0, 0, 0
+				self.master.target_system,
+				self.master.target_component,
+				mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+				0,
+				mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
+				200000,
+				0, 0, 0, 0, 0,
 			)
 		except Exception:
 			pass
-
-		msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=3)
+		# Poll cached messages up to ~2s rather than consuming stream directly
+		start = time.time()
+		msg = None
+		while time.time() - start < 2.0:
+			try:
+				msg = self.master.messages.get('GLOBAL_POSITION_INT')
+			except Exception:
+				msg = None
+			if msg:
+				break
+			time.sleep(0.1)
 		if not msg:
-			self.logger.warning("Could not get current position.")
 			return None
-		
-		return {
-			"lat": msg.lat / 1e7,
-			"lon": msg.lon / 1e7,
-			"alt": msg.relative_alt / 1000.0
-		}
+		return {"lat": msg.lat / 1e7, "lon": msg.lon / 1e7, "alt": msg.relative_alt / 1000.0}
 
 	def upload_mission(self, waypoints_data):
 		if not self.is_connected():
@@ -186,18 +230,27 @@ class MavlinkController:
 			self.logger.error(f"MAVLink: Unknown mode: {mode_name}")
 			return False
 		mode_id = mode_mapping[mode_name.upper()]
+		
 		try:
 			self.master.mav.set_mode_send(
 				self.master.target_system,
 				mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
 				mode_id,
 			)
-			ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-			if ack_msg and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
-				self.logger.info(f"MAVLink: Mode {mode_name} accepted.")
-				return True
-			self.logger.error(f"MAVLink: Mode change failed or no ACK: {ack_msg}")
-			return False
+			ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=5)
+			
+			if ack_msg and ack_msg.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE:
+				if ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+					self.logger.info(f"MAVLink: Mode {mode_name} change confirmed by ACK.")
+					return True
+				else:
+					self.logger.error(f"MAVLink: Mode {mode_name} change rejected by vehicle (Result: {ack_msg.result}).")
+					return False
+			
+			# If we get here, we timed out waiting for the ACK.
+			self.logger.warning(f"MAVLink: No ACK received for {mode_name} mode change. Assuming success for real hardware.")
+			return True # Assume it worked
+
 		except Exception as e:
 			self.logger.error(f"MAVLink: Error setting mode: {e}")
 			return False
@@ -263,10 +316,11 @@ class MavlinkController:
 			self.logger.error("MAVLink: Not connected. Cannot wait for waypoint.")
 			return False
 		start = time.time()
-		while time.time() - start < timeout_seconds:
-			msg = self.master.recv_match(type='MISSION_ITEM_REACHED', blocking=True, timeout=1)
-			if msg and msg.seq == waypoint_sequence_id:
+		while time.time() - start < timeout_seconds and self.is_connected():
+			reached_msg = self.master.messages.get('MISSION_ITEM_REACHED') if hasattr(self.master, 'messages') else None
+			if reached_msg and getattr(reached_msg, 'seq', None) == waypoint_sequence_id:
 				return True
+			time.sleep(0.5)
 		return False
 
 	def send_status_text(self, text_to_send, severity=mavutil.mavlink.MAV_SEVERITY_INFO):
@@ -324,19 +378,27 @@ class MavlinkController:
 	def generate_and_upload_search_grid_mission(self, center_lat, center_lon, grid_size_m, swath_width_m, altitude_m):
 		if not self.is_connected():
 			self.logger.error("MAVLink: Not connected. Cannot generate/upload search grid.")
-			return False
+			return None
+			
 		grid_waypoints_tuples = self._calculate_rectangular_grid_waypoints(
 			center_lat, center_lon, grid_size_m, grid_size_m, swath_width_m, altitude_m
 		)
 		if not grid_waypoints_tuples:
 			self.logger.error("MAVLink: Failed to generate grid waypoints.")
-			return False
+			return None
+
 		waypoints_data_for_upload = []
+		path_positions = []
 		for lat, lon, alt in grid_waypoints_tuples:
 			waypoints_data_for_upload.append(
 				(lat, lon, alt, mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0.0, 10.0, 0.0, float('nan'))
 			)
-		return self.upload_mission(waypoints_data_for_upload)
+			path_positions.append((lat, lon))
+
+		if self.upload_mission(waypoints_data_for_upload):
+			return path_positions
+		else:
+			return None
 
 	def set_altitude(self, altitude_m):
 		if not self.is_connected():
@@ -396,18 +458,17 @@ class MavlinkController:
 		except Exception:
 			pass
 
-		self.logger.info("MAVLink: Waiting for current position...")
+		self.logger.info("MAVLink: Waiting for current position (non-blocking polling)...")
 		current_pos = None
-		for _ in range(20):
-			msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=0.2)
-			if msg:
-				current_pos = msg
-				break
-		if not current_pos:
+		start_poll = time.time()
+		while time.time() - start_poll < 4.0 and self.is_connected():
 			try:
 				current_pos = self.master.messages.get('GLOBAL_POSITION_INT')
 			except Exception:
 				current_pos = None
+			if current_pos:
+				break
+			time.sleep(0.15)
 		if not current_pos:
 			self.logger.error("MAVLink: Could not get current position. Altitude change aborted.")
 			return False

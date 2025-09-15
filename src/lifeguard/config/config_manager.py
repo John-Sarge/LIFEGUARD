@@ -1,4 +1,4 @@
-"""Lightweight JSON-backed configuration manager for app settings."""
+"""Lightweight JSON-backed configuration manager for application settings."""
 import json
 import os
 
@@ -12,7 +12,6 @@ class ConfigManager:
         if not os.path.exists(self.config_path):
             print(f"Config file not found. Creating default '{self.config_path}'")
             return self._create_default_config()
-        
         try:
             with open(self.config_path, 'r') as f:
                 return json.load(f)
@@ -35,7 +34,7 @@ class ConfigManager:
         return self.settings.get(key, default)
 
     def _create_default_config(self):
-        """Creates and saves a default configuration file."""
+        """Creates and saves a default configuration file with sensible defaults."""
         default_settings = {
             "agents": [
                 {"name": "agent1", "connection_string": "tcp:10.24.5.232:5762"},

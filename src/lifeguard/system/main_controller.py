@@ -44,7 +44,7 @@ def main():
     logger = logging.getLogger(__name__)
     logger.info("Starting LIFEGUARD system...")
 
-    # Queues for inter-thread communication
+    # Queues for inter-thread communication between subsystems
     audio_ctrl_queue = queue.Queue()
     stt_in_queue = queue.Queue()      # Audio -> STT inbox
     coord_in_queue = queue.Queue()    # STT/NLU -> Coordinator inbox
@@ -52,7 +52,7 @@ def main():
     mav_in_queue = queue.Queue()      # Coordinator -> MAV inbox
     tts_in_queue = queue.Queue()      # Coordinator/MAV -> TTS inbox
 
-    # Initialize subsystem threads using workers
+    # Initialize subsystem threads using worker classes
     tts_thread = TTSWorker(inbox=tts_in_queue)
     audio_thread = AudioInputWorker(inbox=audio_ctrl_queue, stt_out=stt_in_queue, coord_out=coord_in_queue)
     stt_thread = STTWorker(inbox=stt_in_queue, coord_out=coord_in_queue)
@@ -66,13 +66,13 @@ def main():
         tts_outbox=tts_in_queue,
     )
 
-    # Start all threads
+    # Start all subsystem threads
     for t in (tts_thread, mav_thread, nlu_thread, stt_thread, audio_thread, coord_thread):
         t.start()
 
     logger.info("Subsystems initialized. Ready for integration.")
 
-    # Main loop: wait for Coordinator to finish or until interrupted
+    # Main loop: wait for Coordinator to finish or until interrupted by user
     try:
         while True:
             try:
