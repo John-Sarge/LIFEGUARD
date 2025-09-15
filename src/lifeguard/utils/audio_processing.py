@@ -1,4 +1,4 @@
-"""Audio preprocessing utilities: noise reduction and bandpass filter."""
+"""Audio preprocessing utilities: noise reduction and bandpass filter for LIFEGUARD."""
 import numpy as np
 import noisereduce as nr
 from scipy.signal import butter, lfilter

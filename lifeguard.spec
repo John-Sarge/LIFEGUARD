@@ -1,4 +1,4 @@
-# PyInstaller spec for bundling the GUI app with required models and hooks
+# lifeguard.spec (Final Version)
 
 import os
 import sys
@@ -23,12 +23,13 @@ a = Analysis(
         (os.path.join(spec_root, 'config.json'), '.'),
         (os.path.join(spec_root, 'lifeguard_logo.png'), '.'),
         (os.path.join(spec_root, 'lifeguard.ico'), '.'),
+        (os.path.join(spec_root, 'map_cache.db'), '.')
         
         # AI Models
         (os.path.join(spec_root, 'vosk_models/vosk-model-small-en-us-0.15'), 'vosk_models/vosk-model-small-en-us-0.15'),
         (spacy_model_path, 'en_core_web_sm'),
         
-    # Bundle the entire pyaudio and pymavlink packages
+        # Bundle the entire pyaudio and pymavlink packages
         (pyaudio_pkg_path, 'pyaudio'),
     ] + collect_data_files('pymavlink'),
 

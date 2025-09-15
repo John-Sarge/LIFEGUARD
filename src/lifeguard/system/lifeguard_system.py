@@ -12,7 +12,7 @@ class LifeguardSystem:
         self.settings = settings
         self.ui_messenger = ui_messenger
 
-        # Queues for inter-thread communication
+    # Queues for inter-thread communication between backend subsystems
         self.audio_ctrl_queue = queue.Queue()
         self.stt_in_queue = queue.Queue()
         self.coord_in_queue = queue.Queue()
@@ -20,8 +20,7 @@ class LifeguardSystem:
         self.mav_in_queue = queue.Queue()
         self.tts_in_queue = queue.Queue()
 
-        # Initialize subsystem threads
-        # Note: We pass the settings dict and ui_messenger to the workers that need them
+    # Initialize subsystem threads (settings and ui_messenger passed to relevant workers)
         self.tts = TTSWorker(inbox=self.tts_in_queue)
         self.audio = AudioInputWorker(inbox=self.audio_ctrl_queue, stt_out=self.stt_in_queue)
         self.stt = STTWorker(inbox=self.stt_in_queue, coord_out=self.coord_in_queue, settings=self.settings)

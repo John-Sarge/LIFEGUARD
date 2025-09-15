@@ -1,1 +1,1 @@
-# components package init
+# Components package initializer

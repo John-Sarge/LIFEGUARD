@@ -1,4 +1,6 @@
+# LIFEGUARD GUI: Mission control interface for agents and map display
 import customtkinter as ctk
+from tkintermapview import TkinterMapView
 from PIL import Image
 import queue
 import os
@@ -117,18 +119,16 @@ class SettingsWindow(ctk.CTkToplevel):
     def save_and_exit(self):
         new_agents = [{"name": entry["name"].get(), "connection_string": entry["conn"].get()} for entry in self.agent_entries]
         
-        new_settings = {
+        current_settings = self.config_manager.load_settings()
+        current_settings.update({
             "agents": new_agents,
             "mission": { "default_waypoint_altitude": float(self.altitude_entry.get()), "default_swath_width": float(self.swath_entry.get()) },
             "nlu": { "confidence_threshold": float(self.confidence_entry.get()) },
-            "mavlink": self.config_manager.get("mavlink"),
-            "audio": self.config_manager.get("audio")
-        }
+        })
         
-        self.config_manager.save_settings(new_settings)
+        self.config_manager.save_settings(current_settings)
         self.save_button.configure(text="Saved! Please restart Lifeguard.", fg_color="green")
 
-# Main GUI window: header, log, and Push-to-Talk (PTT) control
 class LifeguardGUI(ctk.CTk):
     def __init__(self, config_manager):
         super().__init__()
@@ -138,11 +138,15 @@ class LifeguardGUI(ctk.CTk):
         self.iconbitmap(resource_path("lifeguard.ico"))
         self.geometry("1280x720")
 
+        self.agent_to_follow = None
+        self.follow_agent_checkbox_var = ctk.BooleanVar(value=True)
+
         self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, padx=20, pady=10, sticky="ew")
+        header_frame.grid(row=0, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
         header_frame.grid_columnconfigure(1, weight=1)
 
         logo_image = ctk.CTkImage(Image.open(resource_path("lifeguard_logo.png")), size=(128, 128))
@@ -159,26 +163,99 @@ class LifeguardGUI(ctk.CTk):
         self.settings_button.grid(row=0, column=2, rowspan=2, padx=10)
 
         self.log_textbox = ctk.CTkTextbox(self, state="disabled", font=("Consolas", 16))
-        self.log_textbox.grid(row=1, column=0, padx=10, pady=(0,10), sticky="nsew")
+        self.log_textbox.grid(row=1, column=0, padx=(10, 5), pady=(0,10), sticky="nsew")
 
         self.ptt_button = ctk.CTkButton(self, text="Push to Talk", height=50, font=ctk.CTkFont(size=16, weight="bold"))
-        self.ptt_button.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
+        self.ptt_button.grid(row=2, column=0, padx=(10, 5), pady=10, sticky="ew")
+        
+        map_frame = ctk.CTkFrame(self)
+        map_frame.grid(row=1, column=1, rowspan=2, padx=(5, 10), pady=(0, 10), sticky="nsew")
+        map_frame.grid_rowconfigure(0, weight=1)
+        map_frame.grid_columnconfigure(0, weight=1)
 
-    # Queue for background log/status messages from backend threads
+        # Initialize map with database_path so background threads use the offline cache
+        self.map_widget = TkinterMapView(
+            map_frame,
+            corner_radius=8,
+            database_path=resource_path("map_cache.db"),
+        )
+        self.map_widget.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        
+        
+        self.follow_checkbox = ctk.CTkCheckBox(map_frame, text="Follow Tasked Agent", variable=self.follow_agent_checkbox_var)
+        self.follow_checkbox.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+
+        self.map_widget.set_position(38.98, -76.48)
+        self.map_widget.set_zoom(12)
+
+        self.agent_markers = {}
+        self.agent_paths = {}
+        
+        footer_frame = ctk.CTkFrame(self, height=20, fg_color="transparent")
+        footer_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="ew")
+        created_by_label = ctk.CTkLabel(
+            footer_frame, 
+            text="Created by John Seargeant - 2025", 
+            font=ctk.CTkFont(size=12), 
+            text_color="gray60"
+        )
+        created_by_label.pack(side="right", padx=10)
+
         self.gui_update_queue = queue.Queue()
         self.after(100, self.process_queue)
 
+    def update_agent_on_map(self, agent_id, lat, lon):
+        if agent_id in self.agent_markers:
+            self.agent_markers[agent_id].set_position(lat, lon)
+        else:
+            marker = self.map_widget.set_marker(lat, lon, text=agent_id)
+            self.agent_markers[agent_id] = marker
+        
+        if agent_id == self.agent_to_follow and self.follow_agent_checkbox_var.get():
+            self.map_widget.set_position(lat, lon)
+
+    def update_agent_path(self, agent_id, position_list):
+        if agent_id in self.agent_paths:
+            self.agent_paths[agent_id].delete()
+
+        if len(position_list) >= 1:
+            path = self.map_widget.set_path(position_list, color="cyan", width=2)
+            self.agent_paths[agent_id] = path
+            
+            if len(position_list) > 1:
+                min_lat = min(p[0] for p in position_list)
+                max_lat = max(p[0] for p in position_list)
+                min_lon = min(p[1] for p in position_list)
+                max_lon = max(p[1] for p in position_list)
+                
+                self.map_widget.fit_bounding_box((max_lat, min_lon), (min_lat, max_lon))
+
     def process_queue(self):
-        """Process messages from the backend to update the GUI."""
         try:
             while not self.gui_update_queue.empty():
                 message = self.gui_update_queue.get_nowait()
-                self.log_textbox.configure(state="normal")
-                self.log_textbox.insert("end", message + "\n")
-                self.log_textbox.see("end")
-                self.log_textbox.configure(state="disabled")
+                if isinstance(message, tuple):
+                    msg_type = message[0]
+                    if msg_type == "map_update":
+                        _, agent_id, lat, lon = message
+                        self.update_agent_on_map(agent_id, lat, lon)
+                    elif msg_type == "follow_agent_update":
+                        _, agent_id = message
+                        self.agent_to_follow = agent_id
+                        self.add_log_message(f"Map is now following {agent_id}.")
+                    elif msg_type == "path_update":
+                        _, agent_id, position_list = message
+                        self.update_agent_path(agent_id, position_list)
+                else:
+                    self.add_log_message(str(message))
         finally:
             self.after(100, self.process_queue)
+            
+    def add_log_message(self, message):
+        self.log_textbox.configure(state="normal")
+        self.log_textbox.insert("end", message + "\n")
+        self.log_textbox.see("end")
+        self.log_textbox.configure(state="disabled")
 
     def open_settings_window(self):
         if not hasattr(self, "settings_window") or not self.settings_window.winfo_exists():

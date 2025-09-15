@@ -88,7 +88,7 @@ Note: Implemented intents now include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `RE
 
 ### Minimum Requirements
 
-  - Python 3.8+
+  - Python 3.9+ (matches `pyproject.toml`)
   - [Vosk](https://alphacephei.com/vosk/) version 0.3.45
   - [spaCy](https://spacy.io/) version 3.7.5 with `en_core_web_sm` model
   - [PyAudio](https://people.csail.mit.edu/hubert/pyaudio/) (microphone input)
@@ -100,7 +100,8 @@ Note: Implemented intents now include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `RE
   - [pyttsx3](https://pypi.org/project/pyttsx3/)
   - [word2number](https://pypi.org/project/word2number/)
   - [customtkinter](https://github.com/TomSchimansky/CustomTkinter) (GUI)
-  - [Pillow](https://python-pillow.org/) (logo/icon) 
+  - [tkintermapview](https://github.com/TomSchimansky/TkinterMapView) (map display & offline tile caching)
+  - [Pillow](https://python-pillow.org/) (logo/icon / image assets)
 
 ### Installation Steps
 
@@ -130,13 +131,18 @@ Note: Implemented intents now include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `RE
     ```
 
 3.  **Install Dependencies**
-    The provided script will install all necessary Python packages.
+  The provided script will install core Python packages (those listed in `pyproject.toml`).
 
     ```bash
     # Make the script executable on Linux/macOS
     chmod +x setup.sh
     ./setup.sh
     ```
+
+  If the GUI reports missing modules (e.g. `ModuleNotFoundError: customtkinter` or `tkintermapview`), install them manually:
+  ```bash
+  pip install customtkinter tkintermapview Pillow
+  ```
 
 4.  **(Linux Only) Install Audio Dependencies**
     PyAudio on Linux requires the PortAudio development libraries.
@@ -162,7 +168,7 @@ Note: Implemented intents now include `SELECT_AGENT`, `REQUEST_GRID_SEARCH`, `RE
 
 2.  **Run the Application**
 
-  GUI launcher (recommended for current PTT workflow):
+  GUI launcher (recommended for current PTT workflow and map display — tiles cached to `map_cache.db`):
 
   ```bash
   python run_gui.py
@@ -219,7 +225,7 @@ A small simulator script, `agent1_grid_sim.py`, is included to exercise the LIFE
   - What it does: Connects to a MAVLink endpoint (e.g., SITL) and, once a mission is running in AUTO, reports a simulated find by sending a STATUSTEXT message: `FOUND:<lat>,<lon>` at a waypoint roughly in the middle of the mission.
   - How it works: It infers mission readiness from STATUSTEXT, can pull the mission from the vehicle to get waypoint coordinates, waits for `MISSION_ITEM_REACHED`, and then emits the `FOUND` message.
   - Why it’s useful: LIFEGUARD listens for `FOUND:` messages to automatically dispatch another available agent to verify the reported location.
-  - Quick start: Adjust the connection string at the bottom of `agent1_grid_sim.py` for your SITL/vehicle (e.g., `tcp:127.0.0.1:5763`) and run it in parallel while following the normal README flow for `lifeguard.py`.
+  - Quick start: Adjust the connection string at the bottom of the desired simulator file (e.g., `agent1_grid_sim.py`) for your SITL/vehicle (e.g., `tcp:127.0.0.1:5763`) and run it in parallel while following the normal README flow. (add "--handshake-test --duration 30" to verify STATUSTEXT message functionality in hardware)
 
 ## Packaging and Deployment
 
@@ -255,5 +261,6 @@ A small simulator script, `agent1_grid_sim.py`, is included to exercise the LIFE
 Refer to [PyPI packaging guide](https://packaging.python.org/tutorials/packaging-projects/) for more details.
 
 ## Acknowledgments
+
 
 This project stands on the shoulders of giants and is made possible by the incredible work of the open-source community, especially the teams behind Vosk, spaCy, and pymavlink.

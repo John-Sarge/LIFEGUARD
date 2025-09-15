@@ -1,4 +1,4 @@
-"""spaCy-powered NLU: extract intents and entities from transcribed text."""
+"""spaCy-powered NLU: extract intents and entities from transcribed text for SAR commands."""
 import re
 import spacy
 import sys

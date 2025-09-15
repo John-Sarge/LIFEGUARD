@@ -7,7 +7,7 @@ from lifeguard.utils.audio_processing import apply_noise_reduction, apply_bandpa
 from lifeguard.system.exceptions import STTError
 
 class SpeechToText:
-	"""Batch and streaming speech recognition using Vosk."""
+	"""Batch and streaming speech recognition using Vosk for LIFEGUARD."""
 	def __init__(self, model_path, sample_rate):
 		self.logger = logging.getLogger(__name__)
 		self.sample_rate = sample_rate
