@@ -16,6 +16,10 @@ LIFEGUARD is a Python-based system that interprets spoken natural language comma
 
 -----
 
+[![Youtube Video](https://github.com/user-attachments/assets/d01035a2-2cdb-48e9-bbb3-b63364f7eec0)](https://www.youtube.com/watch?v=J5yEiPcVvdk)
+
+-----
+
 ## Key Features
 
   - **Speech-to-Text (STT):** Converts live spoken commands to text using the robust, offline Vosk engine.
@@ -266,3 +270,4 @@ Refer to [PyPI packaging guide](https://packaging.python.org/tutorials/packaging
 
 
 This project stands on the shoulders of giants and is made possible by the incredible work of the open-source community, especially the teams behind Vosk, spaCy, and pymavlink.
+
