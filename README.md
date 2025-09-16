@@ -222,6 +222,7 @@ Key extension points:
 
 A small simulator script, `agent1_grid_sim.py`, is included to exercise the LIFEGUARD workflow without a full field setup.
 
+  - Note: Had to switch from using mavproxy on agents as the STATUSTEXT messages used to send target messages was being silently consumed by the autopilot, using mavlink-router now (https://github.com/alireza787b/mavlink-anywhere).
   - What it does: Connects to a MAVLink endpoint (e.g., SITL) and, once a mission is running in AUTO, reports a simulated find by sending a STATUSTEXT message: `FOUND:<lat>,<lon>` at a waypoint roughly in the middle of the mission.
   - How it works: It infers mission readiness from STATUSTEXT, can pull the mission from the vehicle to get waypoint coordinates, waits for `MISSION_ITEM_REACHED`, and then emits the `FOUND` message.
   - Why it’s useful: LIFEGUARD listens for `FOUND:` messages to automatically dispatch another available agent to verify the reported location.
@@ -261,6 +262,7 @@ A small simulator script, `agent1_grid_sim.py`, is included to exercise the LIFE
 Refer to [PyPI packaging guide](https://packaging.python.org/tutorials/packaging-projects/) for more details.
 
 ## Acknowledgments
+
 
 
 This project stands on the shoulders of giants and is made possible by the incredible work of the open-source community, especially the teams behind Vosk, spaCy, and pymavlink.
