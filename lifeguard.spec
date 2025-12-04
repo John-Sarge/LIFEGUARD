@@ -23,7 +23,7 @@ a = Analysis(
         (os.path.join(spec_root, 'config.json'), '.'),
         (os.path.join(spec_root, 'lifeguard_logo.png'), '.'),
         (os.path.join(spec_root, 'lifeguard.ico'), '.'),
-        (os.path.join(spec_root, 'map_cache.db'), '.')
+        (os.path.join(spec_root, 'map_cache.db'), '.'),
         
         # AI Models
         (os.path.join(spec_root, 'vosk_models/vosk-model-small-en-us-0.15'), 'vosk_models/vosk-model-small-en-us-0.15'),
