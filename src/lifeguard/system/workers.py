@@ -334,38 +334,8 @@ class MavlinkWorker(WorkerThread):
         mission_details = self.active_missions.get(source_agent_id, {})
         original_target_desc = mission_details.get("target_desc") if mission_details else None
 
-        # If we stored the original grid bounds, and our verification grid is smaller, clamp the
-        # verification mission center so it stays fully inside the original search area.
+        # Center verification grid exactly on the reported found location.
         verify_grid_size_m = 50  # current fixed verification grid dimension
-        bounds = mission_details.get("grid_bounds") if mission_details else None
-        if bounds and isinstance(bounds, tuple) and len(bounds) == 5:
-            min_lat, max_lat, min_lon, max_lon, original_grid_size_m = bounds
-            if original_grid_size_m > verify_grid_size_m:
-                try:
-                    import math
-                    # Convert half verification size from meters to degrees using local scale
-                    # Approximate conversions
-                    center_lat_for_scale = (min_lat + max_lat) / 2.0
-                    half_verify = verify_grid_size_m / 2.0
-                    lat_deg_per_m = 1.0 / 111320.0  # ~ meters per deg latitude
-                    lon_deg_per_m = 1.0 / (111320.0 * math.cos(math.radians(center_lat_for_scale))) if math.cos(math.radians(center_lat_for_scale)) != 0 else 0
-                    lat_margin = half_verify * lat_deg_per_m
-                    lon_margin = half_verify * lon_deg_per_m if lon_deg_per_m else 0
-                    # Inner allowable box for the center so the verification grid fits entirely
-                    inner_min_lat = min_lat + lat_margin
-                    inner_max_lat = max_lat - lat_margin
-                    inner_min_lon = min_lon + lon_margin
-                    inner_max_lon = max_lon - lon_margin
-                    if inner_min_lat < inner_max_lat and inner_min_lon < inner_max_lon:
-                        clamped_lat = max(inner_min_lat, min(lat, inner_max_lat))
-                        clamped_lon = max(inner_min_lon, min(lon, inner_max_lon))
-                        if (abs(clamped_lat - lat) > 1e-7) or (abs(clamped_lon - lon) > 1e-7):
-                            self.logger.info(
-                                f"Clamped verification grid center from ({lat:.6f},{lon:.6f}) to ({clamped_lat:.6f},{clamped_lon:.6f}) to remain inside original grid bounds."
-                            )
-                        lat, lon = clamped_lat, clamped_lon
-                except Exception as e:
-                    self.logger.warning(f"Failed to clamp verification grid center: {e}")
 
         self._speak(f"Dispatching {responder_id} to verify.")
         
@@ -385,6 +355,12 @@ class MavlinkWorker(WorkerThread):
         )
         mission_thread.daemon = True
         mission_thread.start()
+
+        # Switch map following to the verifying agent so the UI tracks the responder.
+        try:
+            self.ui_messenger.post(("follow_agent_update", responder_id))
+        except Exception:
+            pass
 
     def _execute_mission_sequence(self, ctrl: MavlinkController, msg: MsgCommandGridSearch | MsgCommandFlyTo, agent_id: str):
         try:
