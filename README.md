@@ -16,7 +16,7 @@ LIFEGUARD is a Python-based system that interprets spoken natural language comma
 
 -----
 
-[![Youtube Video](https://github.com/user-attachments/assets/d01035a2-2cdb-48e9-bbb3-b63364f7eec0)](https://www.youtube.com/watch?v=J5yEiPcVvdk)
+[![Youtube Video](https://github.com/user-attachments/assets/fd5a14a0-3b2e-4914-af99-747e4163ee3d)](https://youtu.be/H5sFDNrni64?si=bcq4UI8XKhi0WGQx)
 
 -----
 
@@ -270,4 +270,5 @@ Refer to [PyPI packaging guide](https://packaging.python.org/tutorials/packaging
 
 
 This project stands on the shoulders of giants and is made possible by the incredible work of the open-source community, especially the teams behind Vosk, spaCy, and pymavlink.
+
 
