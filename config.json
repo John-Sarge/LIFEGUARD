@@ -1,17 +1,17 @@
 {
     "agents": [
         {
-            "name": "agent1",
+            "name": "Agent 1",
             "connection_string": "tcp:10.24.5.232:5763"
         },
         {
-            "name": "agent2",
+            "name": "Agent 2",
             "connection_string": "tcp:10.24.5.232:5773"
         }
     ],
     "mission": {
         "default_waypoint_altitude": 30.0,
-        "default_swath_width": 5.0
+        "default_swath_width": 7.0
     },
     "nlu": {
         "confidence_threshold": 0.7
@@ -26,5 +26,11 @@
     },
     "map": {
         "database_only": true
+    },
+    "ship": {
+        "name": "YP 689",
+        "connection_string": "tcp:10.24.5.232:5782",
+        "track_history_minutes": 30,
+        "mob_corridor_half_width_m": 15.0
     }
 }

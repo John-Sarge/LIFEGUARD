@@ -55,6 +55,12 @@ class ConfigManager:
             "audio": {
                 "sample_rate": 16000,
                 "read_chunk": 4096
+            },
+            "ship": {
+                "name": "ship",
+                "connection_string": "",
+                "track_history_minutes": 30,
+                "mob_corridor_half_width_m": 50.0
             }
         }
         self.save_settings(default_settings)

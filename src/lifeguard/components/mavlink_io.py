@@ -64,26 +64,23 @@ class MavlinkController:
 			raise MavlinkError(f"Exception during MAVLink connection: {e}") from e
 
 	def start_position_stream(self, rate_hz: int = 2):
-		"""Requests the vehicle to stream GLOBAL_POSITION_INT at a specific rate."""
+		"""Request GLOBAL_POSITION_INT streaming at rate_hz from the vehicle."""
 		if not self.is_connected():
 			return
 
-		# Interval in microseconds (1,000,000 / Hz)
 		interval_us = int(1_000_000 / rate_hz)
 		self.logger.info(f"Requesting GLOBAL_POSITION_INT stream at {rate_hz} Hz from system {self.master.target_system}.")
 		try:
-			# Preferred: request specific message interval
 			self.master.mav.command_long_send(
 				self.master.target_system,
 				self.master.target_component,
 				mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-				0,  # confirmation
+				0,
 				mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
 				interval_us,
 				0, 0, 0, 0, 0
 			)
-			# Fallback for older stacks: request legacy data streams
-			# These may map GLOBAL_POSITION_INT/GPS_RAW_INT into POSITION/EXTRA streams
+			# Legacy fallback for older firmware stacks
 			self.master.mav.request_data_stream_send(
 				self.master.target_system,
 				self.master.target_component,
@@ -105,10 +102,9 @@ class MavlinkController:
 		return self.master is not None
         
 	def get_current_position(self) -> dict | None:
-		"""Fetches the current GLOBAL_POSITION_INT from the vehicle."""
+		"""Return current position as {lat, lon, alt} from the vehicle's GLOBAL_POSITION_INT."""
 		if not self.is_connected():
 			return None
-		# Best-effort ensure stream; non-blocking pattern to avoid starving other consumers
 		try:
 			self.master.mav.command_long_send(
 				self.master.target_system,
@@ -121,7 +117,6 @@ class MavlinkController:
 			)
 		except Exception:
 			pass
-		# Poll cached messages up to ~2s rather than consuming stream directly
 		start = time.time()
 		msg = None
 		while time.time() - start < 2.0:
@@ -399,6 +394,184 @@ class MavlinkController:
 			return path_positions
 		else:
 			return None
+
+	@staticmethod
+	def _offset_position(lat: float, lon: float, bearing_deg: float, distance_m: float):
+		"""Return (lat, lon) reached by travelling distance_m along bearing_deg from (lat, lon)."""
+		lat_r = math.radians(lat)
+		lon_r = math.radians(lon)
+		bearing_r = math.radians(bearing_deg)
+		d = distance_m / EARTH_RADIUS_METERS
+		lat2 = math.asin(
+			math.sin(lat_r) * math.cos(d)
+			+ math.cos(lat_r) * math.sin(d) * math.cos(bearing_r)
+		)
+		lon2 = lon_r + math.atan2(
+			math.sin(bearing_r) * math.sin(d) * math.cos(lat_r),
+			math.cos(d) - math.sin(lat_r) * math.sin(lat2),
+		)
+		return math.degrees(lat2), math.degrees(lon2)
+
+	@staticmethod
+	def _bearing_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+		"""Forward azimuth in degrees from (lat1,lon1) to (lat2,lon2)."""
+		lat1_r = math.radians(lat1)
+		lat2_r = math.radians(lat2)
+		dlon_r = math.radians(lon2 - lon1)
+		y = math.sin(dlon_r) * math.cos(lat2_r)
+		x = (math.cos(lat1_r) * math.sin(lat2_r)
+			 - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(dlon_r))
+		return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+	@staticmethod
+	def _mean_bearing(b1: float, b2: float) -> float:
+		"""Circular mean of two bearings (degrees), handles 0/360 wrap."""
+		x = math.cos(math.radians(b1)) + math.cos(math.radians(b2))
+		y = math.sin(math.radians(b1)) + math.sin(math.radians(b2))
+		return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+	def _calculate_mob_curved_track_waypoints(
+		self,
+		track_points: list,
+		corridor_half_width_m: float,
+		swath_m: float,
+		altitude_m: float,
+	):
+		"""
+		Generate curved-track-following MOB search lanes.
+
+		Each lane is a copy of the ship's recorded track offset perpendicular to
+		the local heading at every point, so it faithfully follows every turn.
+		Lanes expand outward: 0 (on-track), +swath stbd, -swath port, +2*swath, …
+		Boustrophedon order: even lanes oldest→newest, odd lanes newest→oldest.
+
+		track_points: list of (lat, lon) tuples, oldest first.
+		"""
+		if len(track_points) < 2 or swath_m <= 0 or corridor_half_width_m <= 0:
+			return []
+
+		# --- Step 1: discard consecutive points that are too close together ----
+		# GPS noise can place successive 10-s samples within a few metres of each
+		# other; _bearing_between on nearly-identical coords returns a near-random
+		# heading that distorts the offset lanes.
+		MIN_SEP_M = 12.0
+		filtered = [track_points[0]]
+		for pt in track_points[1:]:
+			la1, lo1 = filtered[-1]
+			la2, lo2 = pt
+			dlat = math.radians(la2 - la1)
+			dlon = math.radians(lo2 - lo1)
+			a = (math.sin(dlat / 2) ** 2
+				 + math.cos(math.radians(la1)) * math.cos(math.radians(la2))
+				 * math.sin(dlon / 2) ** 2)
+			dist = EARTH_RADIUS_METERS * 2.0 * math.atan2(
+				math.sqrt(a), math.sqrt(max(0.0, 1.0 - a))
+			)
+			if dist >= MIN_SEP_M:
+				filtered.append(pt)
+		# Ensure we kept enough points after filtering
+		if len(filtered) < 2:
+			filtered = list(track_points)
+		track_points = filtered
+		n = len(track_points)
+
+		# --- Step 2: raw per-point bearings (in+out average at interior points) -
+		raw_bearings = []
+		for i in range(n):
+			if i == 0:
+				b = self._bearing_between(*track_points[0], *track_points[1])
+			elif i == n - 1:
+				b = self._bearing_between(*track_points[-2], *track_points[-1])
+			else:
+				b_in = self._bearing_between(*track_points[i - 1], *track_points[i])
+				b_out = self._bearing_between(*track_points[i], *track_points[i + 1])
+				b = self._mean_bearing(b_in, b_out)
+			raw_bearings.append(b)
+
+		# --- Step 3: smooth bearings with a 5-point circular-mean window --------
+		# This removes isolated spikes that remain after filtering.
+		HALF = 2
+		local_bearings = []
+		for i in range(n):
+			lo = max(0, i - HALF)
+			hi = min(n, i + HALF + 1)
+			xs = sum(math.cos(math.radians(b)) for b in raw_bearings[lo:hi])
+			ys = sum(math.sin(math.radians(b)) for b in raw_bearings[lo:hi])
+			local_bearings.append((math.degrees(math.atan2(ys, xs)) + 360.0) % 360.0)
+
+		# Lane offsets: 0, +swath (stbd), -swath (port), +2*swath, -2*swath …
+		num_each_side = max(1, int(math.ceil(corridor_half_width_m / swath_m)))
+		lane_offsets_m = [0.0]
+		for i in range(1, num_each_side + 1):
+			lane_offsets_m.append(i * swath_m)   # starboard
+			lane_offsets_m.append(-i * swath_m)  # port
+
+		waypoints = []
+		for lane_idx, offset_m in enumerate(lane_offsets_m):
+			lane = []
+			for i, (lat, lon) in enumerate(track_points):
+				if offset_m == 0.0:
+					lane.append((lat, lon, altitude_m))
+				else:
+					# Perpendicular bearing: +90 = stbd, -90 = port
+					perp = (local_bearings[i] + (90.0 if offset_m > 0 else 270.0)) % 360.0
+					p_lat, p_lon = self._offset_position(lat, lon, perp, abs(offset_m))
+					lane.append((p_lat, p_lon, altitude_m))
+			# Boustrophedon: reverse every other lane
+			if lane_idx % 2 != 0:
+				lane = list(reversed(lane))
+			waypoints.extend(lane)
+
+		return waypoints
+
+	def generate_and_upload_mob_search_mission(
+		self,
+		track_points: list,
+		corridor_half_width_m: float,
+		swath_m: float,
+		altitude_m: float,
+	):
+		"""
+		Generate and upload a curved-track-following MOB search mission.
+
+		track_points: list of (lat, lon) tuples from the ship track, oldest first.
+		Returns a list of (lat, lon) path positions on success, or None on failure.
+		"""
+		if not self.is_connected():
+			self.logger.error("MAVLink: Not connected. Cannot upload MOB search mission.")
+			return None
+
+		waypoints_tuples = self._calculate_mob_curved_track_waypoints(
+			track_points, corridor_half_width_m, swath_m, altitude_m,
+		)
+		if not waypoints_tuples:
+			self.logger.error("MAVLink: Failed to generate MOB curved track waypoints.")
+			return None
+
+		# Orient the pattern so the drone starts from the closest end.
+		# The boustrophedon is a continuous snake, so reversing the flat list is
+		# equivalent to flying the same coverage from the opposite entry point.
+		drone_pos = self.get_current_position()
+		if drone_pos and len(waypoints_tuples) >= 2:
+			def _dist_sq(pt):
+				dlat = drone_pos["lat"] - pt[0]
+				dlon = drone_pos["lon"] - pt[1]
+				return dlat * dlat + dlon * dlon
+			if _dist_sq(waypoints_tuples[-1]) < _dist_sq(waypoints_tuples[0]):
+				waypoints_tuples = list(reversed(waypoints_tuples))
+				self.logger.info("MOB search: reversed waypoint order to start at closer end.")
+
+		waypoints_data = []
+		path_positions = []
+		for lat, lon, alt in waypoints_tuples:
+			waypoints_data.append(
+				(lat, lon, alt, mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0.0, 10.0, 0.0, float('nan'))
+			)
+			path_positions.append((lat, lon))
+
+		if self.upload_mission(waypoints_data):
+			return path_positions
+		return None
 
 	def set_altitude(self, altitude_m):
 		if not self.is_connected():

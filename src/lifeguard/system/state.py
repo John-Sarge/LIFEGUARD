@@ -1,4 +1,4 @@
-"""Message schema for inter-thread communication in LIFEGUARD system."""
+"""Message dataclasses for inter-thread communication in the LIFEGUARD system."""
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, Any
@@ -76,3 +76,21 @@ class MsgCommandSetAltitude(MsgBase):
 @dataclass
 class MsgMavStatus(MsgBase):
 	text: str
+
+# ---------------------------------------------------------------------------
+# Man Overboard (MOB) messages
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MsgMOBActivated(MsgBase):
+	"""Triggered by the MOB button in the GUI."""
+	pass
+
+@dataclass
+class MsgCommandMOBSearch(MsgBase):
+	"""Command to execute a Man Overboard curved-track-following search mission."""
+	track_points: list  # list of (lat, lon) tuples, oldest first
+	corridor_half_width_m: float
+	swath_m: float
+	altitude_m: float
+	target_desc: Optional[str] = None

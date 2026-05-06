@@ -1,11 +1,13 @@
-"""Worker threads for the LIFEGUARD system."""
+"""Worker threads: audio capture, STT, NLU, MAVLink, TTS, and coordination."""
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import logging
 import re
 import time
+from collections import deque
 from typing import Optional, Dict, Any
 
 import pyaudio
@@ -15,7 +17,7 @@ from lifeguard.components.mavlink_io import MavlinkController
 from lifeguard.utils.text_normalization import spoken_numbers_to_digits
 from lifeguard.system.state import *
 
-"""Bridge class to forward backend status to the GUI queue."""
+
 class UIMessenger:
     def __init__(self, gui_queue: Optional[queue.Queue] = None):
         self.gui_queue = gui_queue
@@ -58,9 +60,9 @@ class WorkerThread:
     def run(self):
         raise NotImplementedError
 
-"""Text-to-Speech worker: non-blocking event loop for TTS output."""
+
 class TTSWorker(WorkerThread):
-    """Text-to-Speech output using a non-blocking event loop."""
+    """Text-to-Speech output using pyttsx3 in a non-blocking event loop."""
     def __init__(self, inbox: queue.Queue):
         super().__init__("TTSWorker", inbox)
         self._engine = None
@@ -77,7 +79,6 @@ class TTSWorker(WorkerThread):
             self._engine = None
             return
 
-        # Start the engine's event loop in a non-blocking way
         self._engine.startLoop(False)
 
         while not self.stopped():
@@ -92,21 +93,18 @@ class TTSWorker(WorkerThread):
                 pass
 
             try:
-                # Continuously process the running event loop
                 self._engine.iterate()
             except Exception as e:
                 self.logger.error(f"TTS engine iteration failed: {e}")
-                # Attempt to re-initialize on failure
                 try:
                     self._engine = pyttsx3.init()
-                    self._engine.startLoop(False)  # Re-start the loop
+                    self._engine.startLoop(False)
                 except Exception as init_e:
                     self.logger.error(f"TTS engine re-initialization failed: {init_e}")
                     self.stop()
-            
+
             time.sleep(0.1)
 
-        # Cleanly end the loop when the worker stops
         try:
             self._engine.endLoop()
         except Exception:
@@ -281,6 +279,10 @@ class MavlinkWorker(WorkerThread):
         self.controllers: Dict[str, MavlinkController] = {}
         self.active_agent_id: Optional[str] = None
         self.active_missions: Dict[str, Optional[Dict[str, Any]]] = {}
+        self.ship_controller: Optional[MavlinkController] = None
+        self.ship_track: deque = deque(maxlen=180)  # maxlen resized to config value in run()
+        self._last_ship_track_update: float = 0.0
+        self._ship_return_stops: Dict[str, threading.Event] = {}  # per-agent cancel events
 
     def _speak(self, text: str):
         self.ui_messenger.post(f"LIFEGUARD: {text}")
@@ -302,9 +304,202 @@ class MavlinkWorker(WorkerThread):
             except Exception as e:
                 self.logger.error(f"Could not set {agent_id} to GUIDED on exit: {e}")
 
+    @staticmethod
+    def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Approximate surface distance in metres between two lat/lon points."""
+        _R = 6_378_137.0
+        la1, la2 = math.radians(lat1), math.radians(lat2)
+        dlo = math.radians(lon2 - lon1)
+        dlat = la2 - la1
+        a = math.sin(dlat / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin(dlo / 2) ** 2
+        return _R * 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+    def _start_ship_return_tracking(self, agent_id: str, ctrl, alt: float):
+        """
+        Launch a daemon thread that continuously steers *agent_id* toward the
+        ship's current GPS position, re-issuing fly_to whenever the ship moves
+        more than MOVE_THRESHOLD_M metres.  Stops automatically once the agent
+        arrives within ARRIVAL_THRESHOLD_M metres, or when cancelled by setting
+        the corresponding event in self._ship_return_stops.
+        """
+        # Cancel any previous return-tracking thread for this agent
+        old = self._ship_return_stops.pop(agent_id, None)
+        if old:
+            old.set()
+
+        stop = threading.Event()
+        self._ship_return_stops[agent_id] = stop
+
+        UPDATE_INTERVAL_S = 5.0
+        ARRIVAL_THRESHOLD_M = 25.0  # metres — consider arrived
+        MOVE_THRESHOLD_M = 10.0     # metres — re-send fly_to if ship moved this much
+
+        def _track():
+            last_sent_lat: Optional[float] = None
+            last_sent_lon: Optional[float] = None
+            while not stop.is_set():
+                try:
+                    ship_pos = self._get_current_ship_position()
+                    if not ship_pos:
+                        stop.wait(UPDATE_INTERVAL_S)
+                        continue
+
+                    s_lat, s_lon = ship_pos["lat"], ship_pos["lon"]
+
+                    if ctrl.is_connected():
+                        agent_pos = ctrl.get_current_position()
+                        if agent_pos:
+                            dist = self._haversine_m(
+                                agent_pos["lat"], agent_pos["lon"], s_lat, s_lon
+                            )
+                            if dist < ARRIVAL_THRESHOLD_M:
+                                self.ui_messenger.post(f"[{agent_id}] Arrived at ship.")
+                                break
+
+                    if last_sent_lat is None:
+                        should_send = True
+                    else:
+                        moved = self._haversine_m(last_sent_lat, last_sent_lon, s_lat, s_lon)
+                        should_send = moved >= MOVE_THRESHOLD_M
+
+                    if should_send and ctrl.is_connected():
+                        ctrl.fly_to(s_lat, s_lon, alt)
+                        last_sent_lat, last_sent_lon = s_lat, s_lon
+                        self.logger.debug(
+                            f"Ship-return update for {agent_id}: target ({s_lat:.6f}, {s_lon:.6f})"
+                        )
+                except Exception:
+                    self.logger.exception(f"Ship-return tracking error for {agent_id}")
+
+                stop.wait(UPDATE_INTERVAL_S)
+
+            self._ship_return_stops.pop(agent_id, None)
+
+        t = threading.Thread(target=_track, daemon=True, name=f"ship_return_{agent_id}")
+        t.start()
+
+    def _get_current_ship_position(self) -> Optional[Dict[str, float]]:
+        """Return ship's current position: tries live MAVLink first, falls back to track cache."""
+        if self.ship_controller and self.ship_controller.is_connected():
+            pos = self.ship_controller.get_current_position()
+            if pos:
+                return pos
+        if self.ship_track:
+            _, lat, lon = self.ship_track[-1]
+            return {"lat": lat, "lon": lon, "alt": 0.0}
+        return None
+
+    def _handle_mob_activated(self):
+        """Dispatch the first available agent on a parallel-track MOB search pattern."""
+        self.logger.info(f"MOB: activated. ship_track length={len(self.ship_track)}, agents={list(self.controllers.keys())}")
+        if not self.ship_track:
+            self._speak("No ship track data available. Cannot execute Man Overboard search.")
+            return
+
+        _, mob_lat, mob_lon = self.ship_track[-1]
+
+        ship_cfg = self.settings.get("ship", {})
+        corridor_half_width_m = float(ship_cfg.get("mob_corridor_half_width_m", 50.0))
+        altitude_m = float(self.settings.get("mission", {}).get("default_waypoint_altitude", 30.0))
+        swath_m = float(self.settings.get("mission", {}).get("default_swath_width", 20.0))
+
+        # Find first available (connected, idle) agent
+        agent_id = None
+        for aid, ctrl in self.controllers.items():
+            if ctrl.is_connected() and not self.active_missions.get(aid):
+                agent_id = aid
+                break
+
+        if not agent_id:
+            self._speak("No agents available for Man Overboard search.")
+            return
+
+        ctrl = self.controllers[agent_id]
+        self.active_missions[agent_id] = {"is_mob": True}
+        self.ui_messenger.post(("follow_agent_update", agent_id))
+
+        track_points = [(la, lo) for _, la, lo in self.ship_track]
+        mob_msg = MsgCommandMOBSearch(
+            track_points=track_points,
+            corridor_half_width_m=corridor_half_width_m,
+            swath_m=swath_m,
+            altitude_m=altitude_m,
+        )
+
+        mission_thread = threading.Thread(
+            target=self._execute_mission_sequence,
+            args=(ctrl, mob_msg, agent_id),
+            daemon=True,
+        )
+        mission_thread.start()
+        self._speak(f"Man overboard! Dispatching {agent_id} on parallel track search.")
+
     def _handle_found_target(self, source_agent_id: str, lat: float, lon: float):
         self._speak(f"Agent {source_agent_id} reported a target at {lat:.6f}, {lon:.6f}.")
 
+        mission_info = self.active_missions.get(source_agent_id) or {}
+        is_mob = mission_info.get("is_mob", False)
+        is_mob_verification = mission_info.get("is_mob_verification", False)
+
+        # ------------------------------------------------------------------ #
+        #  MOB FOUND path – source agent returns to ship; verifier dispatched #
+        # ------------------------------------------------------------------ #
+        if is_mob or is_mob_verification:
+            source_ctrl = self.controllers.get(source_agent_id)
+            if source_ctrl and source_ctrl.is_connected():
+                if source_ctrl.set_mode("GUIDED"):
+                    self.ui_messenger.post(f"[{source_agent_id}] Mode set to GUIDED.")
+                cur = source_ctrl.get_current_position()
+                alt = cur["alt"] if cur else self.settings.get("mission", {}).get("default_waypoint_altitude", 30.0)
+                self._start_ship_return_tracking(source_agent_id, source_ctrl, alt)
+                self.ui_messenger.post(f"[{source_agent_id}] Returning to ship (tracking).")
+                self._speak(f"{source_agent_id} is returning to ship.")
+            else:
+                self._speak(f"Could not command {source_agent_id} to return to ship.")
+            self.active_missions[source_agent_id] = None
+
+            if is_mob_verification:
+                return  # verification chain ends here
+
+            responder_id = None
+            for agent_id, controller in self.controllers.items():
+                if (agent_id != source_agent_id
+                        and controller.is_connected()
+                        and not self.active_missions.get(agent_id)):
+                    responder_id = agent_id
+                    break
+
+            if not responder_id:
+                self._speak("No other agents available to verify MOB target.")
+                return
+
+            responder = self.controllers.get(responder_id)
+            if not responder:
+                return
+
+            self._speak(f"Dispatching {responder_id} to verify MOB target.")
+            default_alt = self.settings.get("mission", {}).get("default_waypoint_altitude", 30.0)
+            swath = self.settings.get("mission", {}).get("default_swath_width", 20.0)
+            verify_altitude = max(15.0, default_alt - 5.0)
+
+            verification_msg = MsgCommandGridSearch(
+                lat=lat, lon=lon, grid_size_m=50, swath_m=swath,
+                altitude_m=verify_altitude, target_desc=None,
+            )
+            self.active_missions[responder_id] = {"is_mob_verification": True}
+            mission_thread = threading.Thread(
+                target=self._execute_mission_sequence,
+                args=(responder, verification_msg, responder_id),
+                daemon=True,
+            )
+            mission_thread.start()
+            try:
+                self.ui_messenger.post(("follow_agent_update", responder_id))
+            except Exception:
+                pass
+            return
+
+        # Non-MOB FOUND: source agent loiters; another agent dispatched to verify.
         source_ctrl = self.controllers.get(source_agent_id)
         if source_ctrl and source_ctrl.is_connected():
             self.logger.info(f"Commanding {source_agent_id} to loiter at its current position.")
@@ -333,9 +528,7 @@ class MavlinkWorker(WorkerThread):
 
         mission_details = self.active_missions.get(source_agent_id, {})
         original_target_desc = mission_details.get("target_desc") if mission_details else None
-
-        # Center verification grid exactly on the reported found location.
-        verify_grid_size_m = 50  # current fixed verification grid dimension
+        verify_grid_size_m = 50
 
         self._speak(f"Dispatching {responder_id} to verify.")
         
@@ -362,7 +555,11 @@ class MavlinkWorker(WorkerThread):
         except Exception:
             pass
 
-    def _execute_mission_sequence(self, ctrl: MavlinkController, msg: MsgCommandGridSearch | MsgCommandFlyTo, agent_id: str):
+    def _execute_mission_sequence(self, ctrl: MavlinkController, msg, agent_id: str):
+        # Cancel any active ship-return tracking before starting a new mission
+        old = self._ship_return_stops.pop(agent_id, None)
+        if old:
+            old.set()
         try:
             path_for_gui = None
             if isinstance(msg, MsgCommandGridSearch):
@@ -371,14 +568,21 @@ class MavlinkWorker(WorkerThread):
                     msg.lat, msg.lon, msg.grid_size_m, msg.swath_m, msg.altitude_m
                 )
                 ok = path_for_gui is not None
-            else: 
+            elif isinstance(msg, MsgCommandMOBSearch):
+                self._speak(f"Uploading MOB curved track search to {agent_id}.")
+                path_for_gui = ctrl.generate_and_upload_mob_search_mission(
+                    msg.track_points,
+                    msg.corridor_half_width_m, msg.swath_m, msg.altitude_m,
+                )
+                ok = path_for_gui is not None
+            else:
                 self._speak(f"Uploading waypoint to {agent_id}.")
                 wp = [(msg.lat, msg.lon, msg.altitude_m, 16, 0.0, 10.0, 0.0, float('nan'))]
                 ok = ctrl.upload_mission(wp)
                 if ok:
                     path_for_gui = [(msg.lat, msg.lon)]
 
-            if ok: 
+            if ok:
                 self.ui_messenger.post(f"[{agent_id}] Mission upload successful.")
                 if path_for_gui:
                     self.ui_messenger.post(("path_update", agent_id, path_for_gui))
@@ -413,7 +617,7 @@ class MavlinkWorker(WorkerThread):
             self._speak(f"Mission started for {agent_id}.")
             self.ui_messenger.post(f"[{agent_id}] Mission is executing.")
 
-            if msg.target_desc:
+            if getattr(msg, 'target_desc', None):
                 self._speak(f"Waiting to reach first waypoint to send target details to {agent_id}.")
                 if ctrl.wait_for_waypoint_reached(1, timeout_seconds=180):
                     ctrl.send_status_text(f"TARGET:{msg.target_desc}")
@@ -452,6 +656,26 @@ class MavlinkWorker(WorkerThread):
         if self.active_agent_id:
             self._speak(f"{self.active_agent_id} is selected")
 
+        ship_cfg = self.settings.get("ship", {})
+        ship_conn_str = ship_cfg.get("connection_string", "").strip()
+        track_hist_min = int(ship_cfg.get("track_history_minutes", 30))
+        track_maxlen = max(10, int(track_hist_min * 60 / 10))
+        self.ship_track = deque(maxlen=track_maxlen)
+        if ship_conn_str:
+            try:
+                baud = self.settings.get("mavlink", {}).get("baudrate")
+                src_id = self.settings.get("mavlink", {}).get("source_system_id")
+                self.ship_controller = MavlinkController(ship_conn_str, baud, src_id)
+                self.ship_controller.connect()
+                if self.ship_controller.is_connected():
+                    self.ui_messenger.post("[ship] MAVLink connection established.")
+                else:
+                    self.ship_controller = None
+                    self.ui_messenger.post("[ship] Connection failed (no heartbeat).")
+            except Exception as e:
+                self.ship_controller = None
+                self.ui_messenger.post(f"[ship] Connection failed: {e}")
+
         last_poll = 0.0
         poll_interval = 0.2
 
@@ -465,6 +689,7 @@ class MavlinkWorker(WorkerThread):
 
                         latest_lat = None
                         latest_lon = None
+                        latest_hdg = 65535  # hdg field: centidegrees, 65535 = unknown
                         drained = 0
                         while drained < 30:
                             msg = ctrl.master.recv_match(blocking=False)
@@ -476,14 +701,13 @@ class MavlinkWorker(WorkerThread):
                             if mtype == 'GLOBAL_POSITION_INT':
                                 latest_lat = msg.lat / 1e7
                                 latest_lon = msg.lon / 1e7
+                                latest_hdg = msg.hdg
                             elif mtype == 'STATUSTEXT' and hasattr(msg, 'text'):
                                 text_val = msg.text
                                 if isinstance(text_val, (bytes, bytearray)):
                                     text_val = text_val.decode('utf-8', errors='ignore').rstrip('\x00')
                                 if isinstance(text_val, str) and text_val:
-                                    # Handshake bench test support: respond to agent handshake probes
                                     if text_val.startswith("HANDSHAKE_REQ:"):
-                                        # Format HANDSHAKE_REQ:<seq>:<timestamp_ms>
                                         parts = text_val.split(":", 2)
                                         seq = parts[1] if len(parts) > 1 else "0"
                                         ack_text = f"HANDSHAKE_ACK:{seq}"
@@ -491,11 +715,9 @@ class MavlinkWorker(WorkerThread):
                                             ctrl.send_status_text(ack_text)
                                         except Exception:
                                             self.logger.warning("Failed to send HANDSHAKE_ACK")
-                                        # Still show in UI for visibility
                                         self.ui_messenger.post(f"[{aid}] {text_val}")
                                         continue
                                     if text_val.startswith("HANDSHAKE_ACK:"):
-                                        # Just surface; agent measures RTT
                                         self.ui_messenger.post(f"[{aid}] {text_val}")
                                         continue
                                     if text_val.upper().startswith("FOUND:"):
@@ -509,9 +731,38 @@ class MavlinkWorker(WorkerThread):
                                         self.ui_messenger.post(f"[{aid}] {text_val}")
 
                         if latest_lat is not None and latest_lon is not None:
-                            self.ui_messenger.post(("map_update", aid, latest_lat, latest_lon))
+                            hdg_deg = (latest_hdg / 100.0) if latest_hdg != 65535 else None
+                            self.ui_messenger.post(("map_update", aid, latest_lat, latest_lon, hdg_deg))
                     except Exception as e:
                         self.logger.warning(f"Error polling from {aid}: {e}")
+
+                if self.ship_controller and self.ship_controller.is_connected():
+                    try:
+                        ship_latest_lat = None
+                        ship_latest_lon = None
+                        ship_latest_hdg = 65535  # hdg field: centidegrees, 65535 = unknown
+                        drained = 0
+                        while drained < 30:
+                            smsg = self.ship_controller.master.recv_match(blocking=False)
+                            if not smsg:
+                                break
+                            drained += 1
+                            if smsg.get_type() == 'GLOBAL_POSITION_INT':
+                                ship_latest_lat = smsg.lat / 1e7
+                                ship_latest_lon = smsg.lon / 1e7
+                                ship_latest_hdg = smsg.hdg
+                        if ship_latest_lat is not None and ship_latest_lon is not None:
+                            ship_hdg_deg = (ship_latest_hdg / 100.0) if ship_latest_hdg != 65535 else None
+                            self.ui_messenger.post(("ship_map_update", ship_latest_lat, ship_latest_lon, ship_hdg_deg))
+                            if now - self._last_ship_track_update >= 10.0:
+                                self.ship_track.append((now, ship_latest_lat, ship_latest_lon))
+                                self._last_ship_track_update = now
+                                track_positions = [(la, lo) for _, la, lo in self.ship_track]
+                                if len(track_positions) >= 2:
+                                    self.ui_messenger.post(("ship_track_update", track_positions))
+                    except Exception as e:
+                        self.logger.warning(f"Error polling ship: {e}")
+
                 last_poll = now
 
             try:
@@ -523,7 +774,7 @@ class MavlinkWorker(WorkerThread):
                 break
 
             active_controller = self._get_active()
-            if not active_controller and not isinstance(msg, MsgSelectAgent):
+            if not active_controller and not isinstance(msg, (MsgSelectAgent, MsgMOBActivated)):
                 self._speak("No active agent.")
                 continue
 
@@ -537,6 +788,12 @@ class MavlinkWorker(WorkerThread):
                         daemon=True,
                     )
                     mission_thread.start()
+            elif isinstance(msg, MsgMOBActivated):
+                try:
+                    self._handle_mob_activated()
+                except Exception as e:
+                    self.logger.error(f"MOB handler error: {e}", exc_info=True)
+                    self._speak("Man overboard system error. Check logs.")
             elif isinstance(msg, MsgSelectAgent):
                 if msg.agent_id in self.controllers:
                     self.active_agent_id = msg.agent_id
@@ -550,6 +807,11 @@ class MavlinkWorker(WorkerThread):
         for aid, ctrl in self.controllers.items():
             try:
                 ctrl.close_connection()
+            except Exception:
+                pass
+        if self.ship_controller:
+            try:
+                self.ship_controller.close_connection()
             except Exception:
                 pass
 
@@ -640,7 +902,7 @@ class Coordinator(WorkerThread):
 
     def run(self):
         self._set_capture_mode(CaptureMode.COMMAND)
-        self._speak("LIFEGUARD initialized. Press and Hold Push to Talk button to speak.")
+        self._speak("LIFEGUARD initialized. Press and hold Push to Talk to speak.")
         
         while not self.stopped():
             try:
