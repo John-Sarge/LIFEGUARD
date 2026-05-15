@@ -1,12 +1,29 @@
 {
     "agents": [
         {
-            "name": "Agent 1",
-            "connection_string": "tcp:10.24.5.232:5763"
+            "name": "Drone Junior",
+            "connection_string": "tcp:ip:5763",
+            "frame_type": "UAV"
         },
         {
-            "name": "Agent 2",
-            "connection_string": "tcp:10.24.5.232:5773"
+            "name": "Modal AI",
+            "connection_string": "tcp:ip:5773",
+            "frame_type": "UAV"
+        },
+        {
+            "name": "YP 704",
+            "connection_string": "tcp:ip:5793",
+            "frame_type": "Ship"
+        },
+        {
+            "name": "Ledger McQueen",
+            "connection_string": "tcp:ip:5803",
+            "frame_type": "UGV"
+        },
+        {
+            "name": "Chesapeake",
+            "connection_string": "tcp:ip:5813",
+            "frame_type": "USV"
         }
     ],
     "mission": {
@@ -29,8 +46,10 @@
     },
     "ship": {
         "name": "YP 689",
-        "connection_string": "tcp:10.24.5.232:5782",
+        "connection_string": "tcp:ip:5782",
         "track_history_minutes": 30,
-        "mob_corridor_half_width_m": 15.0
+        "mob_corridor_half_width_m": 15.0,
+        "mob_takeoff_altitude_m": 100.0,
+        "mob_climb_speed_ms": 8.0
     }
 }

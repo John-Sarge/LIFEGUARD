@@ -93,4 +93,6 @@ class MsgCommandMOBSearch(MsgBase):
 	corridor_half_width_m: float
 	swath_m: float
 	altitude_m: float
+	takeoff_altitude_m: float = 100.0
+	climb_speed_ms: float = 8.0
 	target_desc: Optional[str] = None

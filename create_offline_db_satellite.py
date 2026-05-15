@@ -1,4 +1,4 @@
-# create_offline_db.py
+# create_offline_db_satellite.py
 import sqlite3
 import requests
 from PIL import Image
@@ -16,15 +16,18 @@ bounding_box = {
     "right_lon": -76.45403
 }
 
-# Define the zoom levels you want to download (e.g., 10=regional, 17=street level)
-zoom_levels = range(8, 20) # Downloads zoom levels 8 through 19 (inclusive)
+# Define the zoom levels you want to download.
+# NOTE: Esri World Imagery is high-resolution; higher zoom levels produce many
+# more tiles and take considerably longer.  Zoom 17 is street/building level.
+zoom_levels = range(8, 20)
 
-# The name of the output database file
-DB_FILE = "map_cache.db"
+# The name of the output database file — must match writable_data_path("map_cache_satellite.db") in gui.py
+DB_FILE = "map_cache_satellite.db"
 
-# Must match TILE_SERVER_STREET in gui.py exactly.
-# CARTO Voyager — free, no API key, CDN-backed, OSM-derived data.
-TILE_SERVER = "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
+# Must match the TILE_SERVER_SATELLITE constant in gui.py exactly.
+# Esri World Imagery — free, no API key required.
+# NOTE: tile coords are {z}/{y}/{x} (row/col order), not the usual {z}/{x}/{y}.
+TILE_SERVER = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 # --- END CONFIGURATION ---
 
 
@@ -36,31 +39,32 @@ def deg2num(lat_deg, lon_deg, zoom):
     ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
     return (xtile, ytile)
 
+
 def download_tile(zoom, x, y):
-    """Downloads a single map tile from CARTO Voyager."""
-    url = f"https://a.basemaps.cartocdn.com/rastertiles/voyager/{zoom}/{x}/{y}.png"
-    headers = {'User-Agent': 'Lifeguard Map Downloader/1.0'}
+    """Downloads a single satellite tile from Esri World Imagery."""
+    # Esri URL uses {z}/{y}/{x} — y comes before x
+    url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{y}/{x}"
+    headers = {'User-Agent': 'Lifeguard Map Downloader/1.0 (github.com/lifeguard-yp)'}
     try:
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
             print(f"  - HTTP {response.status_code} for tile {zoom}/{x}/{y}")
             return None
-        # Validate that it's a real image
+        # Validate that it's a real image (Esri water/empty tiles are legitimately small)
         Image.open(io.BytesIO(response.content))
         return response.content
     except Exception as e:
         print(f"  - Error downloading tile {zoom}/{x}/{y}: {e}")
     return None
 
+
 def create_database():
-    """Creates and populates the SQLite database with map tiles."""
+    """Creates and populates the SQLite database with satellite map tiles."""
     print(f"Creating database: {DB_FILE}")
     db = sqlite3.connect(DB_FILE)
     cursor = db.cursor()
 
-    # Ensure schema is compatible; migrate if an old schema exists
     def ensure_schema():
-        # server table
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS server (
@@ -70,12 +74,10 @@ def create_database():
             """
         )
 
-        # Does tiles table exist?
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tiles';")
         has_tiles = cursor.fetchone() is not None
 
         if not has_tiles:
-            # Create fresh tiles table with the expected schema
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tiles (
@@ -89,14 +91,12 @@ def create_database():
                 """
             )
         else:
-            # Inspect existing columns
             cursor.execute("PRAGMA table_info(tiles)")
             cols = [row[1] for row in cursor.fetchall()]
             needs_migration = not ("server" in cols and "tile_image" in cols)
 
             if needs_migration:
-                print("[create_offline_db] Detected old tiles schema; migrating to new format...")
-                # Rename old table, create new, migrate rows
+                print("[create_offline_db_satellite] Detected old tiles schema; migrating to new format...")
                 cursor.execute("ALTER TABLE tiles RENAME TO tiles_old;")
                 cursor.execute(
                     """
@@ -110,7 +110,6 @@ def create_database():
                     );
                     """
                 )
-                # Migrate existing data if it uses tile_data column
                 cursor.execute("PRAGMA table_info(tiles_old)")
                 old_cols = [row[1] for row in cursor.fetchall()]
                 if "tile_data" in old_cols:
@@ -119,10 +118,8 @@ def create_database():
                         "SELECT zoom, x, y, ?, tile_data FROM tiles_old;",
                         (TILE_SERVER,)
                     )
-                # Drop old table
                 cursor.execute("DROP TABLE tiles_old;")
 
-        # sections table (not required for read but created for consistency)
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS sections (
@@ -136,30 +133,28 @@ def create_database():
             """
         )
 
-        # Ensure server row exists
         cursor.execute("INSERT OR IGNORE INTO server (url, max_zoom) VALUES (?, ?)", (TILE_SERVER, max(zoom_levels)))
         db.commit()
 
     ensure_schema()
 
     total_tiles = 0
-    
+
     for zoom in zoom_levels:
         top_left = deg2num(bounding_box["top_lat"], bounding_box["left_lon"], zoom)
         bottom_right = deg2num(bounding_box["bottom_lat"], bounding_box["right_lon"], zoom)
 
         x_range = range(top_left[0], bottom_right[0] + 1)
         y_range = range(top_left[1], bottom_right[1] + 1)
-        
+
         tile_count_for_zoom = len(x_range) * len(y_range)
         total_tiles += tile_count_for_zoom
-        print(f"\nDownloading {tile_count_for_zoom} tiles for zoom level {zoom}...")
-        
+        print(f"\nDownloading {tile_count_for_zoom} satellite tiles for zoom level {zoom}...")
+
         count = 0
         for x in x_range:
             for y in y_range:
                 count += 1
-                # Skip only if a valid (non-blocked) tile is already stored
                 cursor.execute("SELECT 1 FROM tiles WHERE zoom=? AND x=? AND y=? AND server=?", (zoom, x, y, TILE_SERVER))
                 if cursor.fetchone():
                     print(f"  ({count}/{tile_count_for_zoom}) Skipping existing tile {zoom}/{x}/{y}")
@@ -173,10 +168,11 @@ def create_database():
                         (zoom, x, y, TILE_SERVER, tile_data),
                     )
                     db.commit()
-                time.sleep(0.1) # Be nice to the tile server
+                time.sleep(0.05)  # Esri allows faster polling than OSM
 
-    print(f"\nFinished. Downloaded a total of {total_tiles} tiles.")
+    print(f"\nFinished. Downloaded a total of {total_tiles} satellite tiles.")
     db.close()
+
 
 if __name__ == "__main__":
     create_database()

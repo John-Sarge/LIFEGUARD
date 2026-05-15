@@ -37,8 +37,8 @@ class ConfigManager:
         """Creates and saves a default configuration file with sensible defaults."""
         default_settings = {
             "agents": [
-                {"name": "agent1", "connection_string": "tcp:10.24.5.232:5762"},
-                {"name": "agent2", "connection_string": "tcp:10.24.5.232:5772"}
+                {"name": "agent1", "connection_string": "tcp:10.24.5.232:5762", "frame_type": "UAV"},
+                {"name": "agent2", "connection_string": "tcp:10.24.5.232:5772", "frame_type": "UAV"}
             ],
             "mavlink": {
                 "baudrate": 57600,
@@ -60,7 +60,9 @@ class ConfigManager:
                 "name": "ship",
                 "connection_string": "",
                 "track_history_minutes": 30,
-                "mob_corridor_half_width_m": 50.0
+                "mob_corridor_half_width_m": 50.0,
+                "mob_takeoff_altitude_m": 100.0,
+                "mob_climb_speed_ms": 8.0
             }
         }
         self.save_settings(default_settings)

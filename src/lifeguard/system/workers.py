@@ -283,6 +283,7 @@ class MavlinkWorker(WorkerThread):
         self.ship_track: deque = deque(maxlen=180)  # maxlen resized to config value in run()
         self._last_ship_track_update: float = 0.0
         self._ship_return_stops: Dict[str, threading.Event] = {}  # per-agent cancel events
+        self._agent_frame_types: Dict[str, str] = {}  # agent_id → frame_type (UAV/USV/UGV/UUV/Ship)
 
     def _speak(self, text: str):
         self.ui_messenger.post(f"LIFEGUARD: {text}")
@@ -354,6 +355,7 @@ class MavlinkWorker(WorkerThread):
                             )
                             if dist < ARRIVAL_THRESHOLD_M:
                                 self.ui_messenger.post(f"[{agent_id}] Arrived at ship.")
+                                self._speak(f"{agent_id} arrived at ship.")
                                 break
 
                     if last_sent_lat is None:
@@ -400,13 +402,17 @@ class MavlinkWorker(WorkerThread):
 
         ship_cfg = self.settings.get("ship", {})
         corridor_half_width_m = float(ship_cfg.get("mob_corridor_half_width_m", 50.0))
+        takeoff_altitude_m = float(ship_cfg.get("mob_takeoff_altitude_m", 100.0))
+        climb_speed_ms = float(ship_cfg.get("mob_climb_speed_ms", 8.0))
         altitude_m = float(self.settings.get("mission", {}).get("default_waypoint_altitude", 30.0))
         swath_m = float(self.settings.get("mission", {}).get("default_swath_width", 20.0))
 
-        # Find first available (connected, idle) agent
+        # Find first available (connected, idle) UAV or USV agent
         agent_id = None
         for aid, ctrl in self.controllers.items():
-            if ctrl.is_connected() and not self.active_missions.get(aid):
+            if (self._agent_frame_types.get(aid, "UAV") in ("UAV", "USV")
+                    and ctrl.is_connected()
+                    and not self.active_missions.get(aid)):
                 agent_id = aid
                 break
 
@@ -424,6 +430,8 @@ class MavlinkWorker(WorkerThread):
             corridor_half_width_m=corridor_half_width_m,
             swath_m=swath_m,
             altitude_m=altitude_m,
+            takeoff_altitude_m=takeoff_altitude_m,
+            climb_speed_ms=climb_speed_ms,
         )
 
         mission_thread = threading.Thread(
@@ -464,20 +472,21 @@ class MavlinkWorker(WorkerThread):
             responder_id = None
             for agent_id, controller in self.controllers.items():
                 if (agent_id != source_agent_id
+                        and self._agent_frame_types.get(agent_id, "UAV") != "Ship"
                         and controller.is_connected()
                         and not self.active_missions.get(agent_id)):
                     responder_id = agent_id
                     break
 
             if not responder_id:
-                self._speak("No other agents available to verify MOB target.")
+                self._speak("No other agents available to verify Man Overboard target.")
                 return
 
             responder = self.controllers.get(responder_id)
             if not responder:
                 return
 
-            self._speak(f"Dispatching {responder_id} to verify MOB target.")
+            self._speak(f"Dispatching {responder_id} to verify Man Overboard target.")
             default_alt = self.settings.get("mission", {}).get("default_waypoint_altitude", 30.0)
             swath = self.settings.get("mission", {}).get("default_swath_width", 20.0)
             verify_altitude = max(15.0, default_alt - 5.0)
@@ -515,10 +524,13 @@ class MavlinkWorker(WorkerThread):
 
         responder_id = None
         for agent_id, controller in self.controllers.items():
-            if agent_id != source_agent_id and controller.is_connected() and not self.active_missions.get(agent_id):
+            if (agent_id != source_agent_id
+                    and self._agent_frame_types.get(agent_id, "UAV") != "Ship"
+                    and controller.is_connected()
+                    and not self.active_missions.get(agent_id)):
                 responder_id = agent_id
                 break
-        
+
         if not responder_id:
             self._speak("No other agents are available to verify.")
             return
@@ -560,19 +572,35 @@ class MavlinkWorker(WorkerThread):
         old = self._ship_return_stops.pop(agent_id, None)
         if old:
             old.set()
+        # Hold the busy flag for the whole sequence so the poll loop doesn't
+        # consume COMMAND_ACKs that set_mode/arm_vehicle are waiting for.
+        ctrl._mavlink_busy.set()
         try:
             path_for_gui = None
             if isinstance(msg, MsgCommandGridSearch):
                 self._speak(f"Uploading {msg.grid_size_m}m grid mission to {agent_id}.")
+                agent_frame = self._agent_frame_types.get(agent_id, "UAV")
+                is_surface = agent_frame in ("USV", "UGV", "Ship")
+                ship_cfg = self.settings.get("ship", {})
+                takeoff_alt = float(ship_cfg.get("mob_takeoff_altitude_m", 100.0))
+                climb_spd = float(ship_cfg.get("mob_climb_speed_ms", 8.0))
                 path_for_gui = ctrl.generate_and_upload_search_grid_mission(
-                    msg.lat, msg.lon, msg.grid_size_m, msg.swath_m, msg.altitude_m
+                    msg.lat, msg.lon, msg.grid_size_m, msg.swath_m, msg.altitude_m,
+                    include_takeoff=not is_surface,
+                    takeoff_altitude_m=takeoff_alt,
+                    climb_speed_ms=climb_spd,
                 )
                 ok = path_for_gui is not None
             elif isinstance(msg, MsgCommandMOBSearch):
-                self._speak(f"Uploading MOB curved track search to {agent_id}.")
+                self._speak(f"Uploading Man Overboard curved track search to {agent_id}.")
+                agent_frame = self._agent_frame_types.get(agent_id, "UAV")
+                is_surface = agent_frame in ("USV", "UGV", "Ship")
+                mob_altitude = 0.0 if is_surface else msg.altitude_m
                 path_for_gui = ctrl.generate_and_upload_mob_search_mission(
                     msg.track_points,
-                    msg.corridor_half_width_m, msg.swath_m, msg.altitude_m,
+                    msg.corridor_half_width_m, msg.swath_m, mob_altitude,
+                    msg.takeoff_altitude_m, msg.climb_speed_ms,
+                    include_takeoff=not is_surface,
                 )
                 ok = path_for_gui is not None
             else:
@@ -586,26 +614,31 @@ class MavlinkWorker(WorkerThread):
                 self.ui_messenger.post(f"[{agent_id}] Mission upload successful.")
                 if path_for_gui:
                     self.ui_messenger.post(("path_update", agent_id, path_for_gui))
-                    # Store grid bounds for potential future verification / clamping.
-                    try:
-                        if isinstance(msg, MsgCommandGridSearch):
-                            lats = [p[0] for p in path_for_gui]
-                            lons = [p[1] for p in path_for_gui]
-                            if lats and lons and agent_id in self.active_missions:
-                                self.active_missions[agent_id]["grid_bounds"] = (
-                                    min(lats), max(lats), min(lons), max(lons), msg.grid_size_m
-                                )
-                    except Exception as e:
-                        self.logger.warning(f"Could not record grid bounds for {agent_id}: {e}")
             else: 
                 raise Exception("Mission upload failed.")
-            
-            if ctrl.set_mode("AUTO"): self.ui_messenger.post(f"[{agent_id}] Mode set to AUTO.")
-            else: raise Exception("Set mode AUTO failed.")
 
-            if ctrl.arm_vehicle(): self.ui_messenger.post(f"[{agent_id}] Vehicle armed.")
+            # Arm in GUIDED — ArduPilot won't arm in AUTO mode.
+            # After arming we switch to AUTO and issue MISSION_START.
+            if ctrl.set_mode("GUIDED"):
+                self.ui_messenger.post(f"[{agent_id}] Mode set to GUIDED for arming.")
+            else:
+                self.logger.warning(f"[{agent_id}] GUIDED mode ACK not received, continuing.")
+            time.sleep(1.5)
+
+            force_arm = isinstance(msg, MsgCommandMOBSearch) or (
+                isinstance(msg, MsgCommandGridSearch)
+                and not self._agent_frame_types.get(agent_id, "UAV") in ("USV", "UGV", "Ship")
+            )
+            if ctrl.arm_vehicle(force=force_arm): self.ui_messenger.post(f"[{agent_id}] Vehicle armed.")
             else: raise Exception("Arming failed.")
-            
+
+            time.sleep(0.5)
+            if ctrl.set_mode("AUTO"):
+                self.ui_messenger.post(f"[{agent_id}] Mode set to AUTO.")
+            else:
+                self.logger.warning(f"[{agent_id}] AUTO mode ACK not received, continuing.")
+
+            time.sleep(1.0)
             if ctrl.start_mission(): self.ui_messenger.post(f"[{agent_id}] Mission start command sent.")
             else: raise Exception("Mission start failed.")
 
@@ -630,6 +663,8 @@ class MavlinkWorker(WorkerThread):
             self.logger.error(f"Mission sequence for {agent_id} failed: {e}")
             self._speak(f"Mission for {agent_id} failed.")
             self.active_missions[agent_id] = None
+        finally:
+            ctrl._mavlink_busy.clear()
 
     def run(self):
         for agent_config in self.settings.get("agents", []):
@@ -643,6 +678,7 @@ class MavlinkWorker(WorkerThread):
                 ctrl.connect()
                 if ctrl.is_connected():
                     self.controllers[agent_id] = ctrl
+                    self._agent_frame_types[agent_id] = agent_config.get("frame_type", "UAV")
                     self.ui_messenger.post(f"[{agent_id}] Connection successful.")
                     self.active_missions[agent_id] = None
             except Exception as e:
@@ -658,6 +694,7 @@ class MavlinkWorker(WorkerThread):
 
         ship_cfg = self.settings.get("ship", {})
         ship_conn_str = ship_cfg.get("connection_string", "").strip()
+        ship_name = ship_cfg.get("name", "ship") or "ship"
         track_hist_min = int(ship_cfg.get("track_history_minutes", 30))
         track_maxlen = max(10, int(track_hist_min * 60 / 10))
         self.ship_track = deque(maxlen=track_maxlen)
@@ -668,17 +705,16 @@ class MavlinkWorker(WorkerThread):
                 self.ship_controller = MavlinkController(ship_conn_str, baud, src_id)
                 self.ship_controller.connect()
                 if self.ship_controller.is_connected():
-                    self.ui_messenger.post("[ship] MAVLink connection established.")
+                    self.ui_messenger.post(f"[{ship_name}] MAVLink connection established.")
                 else:
                     self.ship_controller = None
-                    self.ui_messenger.post("[ship] Connection failed (no heartbeat).")
+                    self.ui_messenger.post(f"[{ship_name}] Connection failed (no heartbeat).")
             except Exception as e:
                 self.ship_controller = None
-                self.ui_messenger.post(f"[ship] Connection failed: {e}")
+                self.ui_messenger.post(f"[{ship_name}] Connection failed: {e}")
 
         last_poll = 0.0
-        poll_interval = 0.2
-
+        poll_interval = 0.2  # seconds between MAVLink message drain cycles (~5 Hz)
         while not self.stopped():
             now = time.time()
             if now - last_poll >= poll_interval:
@@ -687,11 +723,15 @@ class MavlinkWorker(WorkerThread):
                         if not ctrl.is_connected():
                             continue
 
+                        # Skip draining while a mission-sequence thread owns this controller
+                        if ctrl._mavlink_busy.is_set():
+                            continue
+
                         latest_lat = None
                         latest_lon = None
                         latest_hdg = 65535  # hdg field: centidegrees, 65535 = unknown
                         drained = 0
-                        while drained < 30:
+                        while drained < 30:  # cap per-tick drain to avoid blocking the poll loop
                             msg = ctrl.master.recv_match(blocking=False)
                             if not msg:
                                 break
@@ -732,7 +772,8 @@ class MavlinkWorker(WorkerThread):
 
                         if latest_lat is not None and latest_lon is not None:
                             hdg_deg = (latest_hdg / 100.0) if latest_hdg != 65535 else None
-                            self.ui_messenger.post(("map_update", aid, latest_lat, latest_lon, hdg_deg))
+                            frame_type = self._agent_frame_types.get(aid, "UAV")
+                            self.ui_messenger.post(("map_update", aid, latest_lat, latest_lon, hdg_deg, frame_type))
                     except Exception as e:
                         self.logger.warning(f"Error polling from {aid}: {e}")
 
@@ -742,7 +783,7 @@ class MavlinkWorker(WorkerThread):
                         ship_latest_lon = None
                         ship_latest_hdg = 65535  # hdg field: centidegrees, 65535 = unknown
                         drained = 0
-                        while drained < 30:
+                        while drained < 30:  # cap per-tick drain to avoid blocking the poll loop
                             smsg = self.ship_controller.master.recv_match(blocking=False)
                             if not smsg:
                                 break
@@ -793,7 +834,7 @@ class MavlinkWorker(WorkerThread):
                     self._handle_mob_activated()
                 except Exception as e:
                     self.logger.error(f"MOB handler error: {e}", exc_info=True)
-                    self._speak("Man overboard system error. Check logs.")
+                    self._speak("Man Overboard system error. Check logs.")
             elif isinstance(msg, MsgSelectAgent):
                 if msg.agent_id in self.controllers:
                     self.active_agent_id = msg.agent_id

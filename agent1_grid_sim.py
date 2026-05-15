@@ -71,16 +71,17 @@ def simulate_found_midway(connection_string: str):
 
     mission_items: Optional[Dict[int, Tuple[float, float]]] = None
     
-    # It will keep trying to get the mission until the vehicle is in AUTO
+    # Poll until both conditions are met: a valid mission has been retrieved
+    # AND the vehicle has entered AUTO mode.
     while True:
-        master.wait_heartbeat() # Wait for any message to keep the connection alive
+        master.wait_heartbeat() # Block until a heartbeat arrives, pacing the poll loop
 
-        # Always try to pull the mission, even before AUTO mode.
-        # This way, we get it as soon as it's available.
+        # Attempt to pull the mission on every iteration so it is ready as
+        # soon as it is available, regardless of current flight mode.
         if not mission_items:
             mission_items = _pull_mission_items(master)
 
-        # Only break the loop and proceed once BOTH conditions are met.
+        # Only proceed once both AUTO mode and a valid mission are confirmed.
         if _mode_is_auto(master) and mission_items:
             print("In AUTO mode with a valid mission. Proceeding to select target.")
             break

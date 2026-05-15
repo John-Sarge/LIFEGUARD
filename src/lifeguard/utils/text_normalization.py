@@ -41,7 +41,7 @@ def extract_altitude_from_text(text):
     logger = logging.getLogger(__name__)
     try:
         text = text.lower()
-        # This regex now ONLY looks for a number following the word "altitude"
+        # Only extracts a number when it is explicitly preceded by the word "altitude"
         match = re.search(r'altitude\s*(?:to|is|at)?\s*([a-zA-Z0-9\-\s]+)', text)
         if match:
             candidate = match.group(1).strip()

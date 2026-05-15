@@ -2,6 +2,7 @@
 import math
 import time
 import logging
+import threading
 from pymavlink import mavutil, mavwp
 from lifeguard.system.exceptions import MavlinkError, MavlinkConnectionError
 
@@ -16,6 +17,8 @@ class MavlinkController:
 		self.baudrate = baudrate
 		self.source_system_id = source_system_id
 		self.master = None
+		# Held by _execute_mission_sequence so the poll loop doesn't consume ACKs.
+		self._mavlink_busy = threading.Event()
 
 	def connect(self):
 		"""Establish connection to drone and wait for heartbeat."""
@@ -192,16 +195,26 @@ class MavlinkController:
 		try:
 			self.master.mav.mission_clear_all_send(self.master.target_system, 1)
 			self.master.recv_match(type='MISSION_ACK', blocking=True, timeout=5)
-			time.sleep(1)
+			# Flush any stale messages that accumulated before or during the clear.
+			while self.master.recv_match(blocking=False):
+				pass
+			time.sleep(0.5)
 			self.master.mav.mission_count_send(
 				self.master.target_system, 1, wp_loader.count(), mavutil.mavlink.MAV_MISSION_TYPE_MISSION
 			)
 			for i in range(wp_loader.count()):
 				msg = self.master.recv_match(
-					type=['MISSION_REQUEST', 'MISSION_REQUEST_INT'], blocking=True, timeout=5
+					type=['MISSION_REQUEST', 'MISSION_REQUEST_INT', 'MISSION_ACK'],
+					blocking=True, timeout=10
 				)
 				if not msg:
-					self.logger.error(f"MAVLink: No MISSION_REQUEST for wp {i}")
+					self.logger.error(f"MAVLink: No MISSION_REQUEST for wp {i} (timeout)")
+					return False
+				if msg.get_type() == 'MISSION_ACK':
+					self.logger.error(
+						f"MAVLink: Unexpected MISSION_ACK during upload at wp {i} "
+						f"(type={msg.type}). Vehicle rejected the mission."
+					)
 					return False
 				self.master.mav.send(wp_loader.wp(msg.seq))
 				if msg.seq == wp_loader.count() - 1:
@@ -250,22 +263,25 @@ class MavlinkController:
 			self.logger.error(f"MAVLink: Error setting mode: {e}")
 			return False
 
-	def arm_vehicle(self):
+	def arm_vehicle(self, force: bool = False):
+		"""
+		Arm the vehicle.
+
+		force=True sends param2=21196, which bypasses ArduPilot pre-arm checks.
+		Use only for emergency launches (e.g. MOB) where checks are intentionally waived.
+		"""
 		if not self.is_connected():
 			self.logger.error("MAVLink: Not connected. Cannot arm.")
 			return False
+		param2 = 21196.0 if force else 0.0
 		self.master.mav.command_long_send(
 			self.master.target_system,
 			self.master.target_component,
 			mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
 			0,
-			1,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
+			1,      # param1: 1 = arm
+			param2, # param2: 0 = normal, 21196 = force (bypass pre-arm)
+			0, 0, 0, 0, 0,
 		)
 		ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=5)
 		if (
@@ -273,37 +289,44 @@ class MavlinkController:
 			and ack_msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
 			and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED
 		):
-			self.logger.info("MAVLink: Armed.")
+			self.logger.info(f"MAVLink: Armed (force={force}).")
 			return True
 		self.logger.error(f"MAVLink: Arming failed: {ack_msg}")
 		return False
 
-	def start_mission(self):
+	def start_mission(self, retries: int = 3, retry_delay: float = 1.5):
 		if not self.is_connected():
 			self.logger.error("MAVLink: Not connected. Cannot start mission.")
 			return False
-		self.master.mav.command_long_send(
-			self.master.target_system,
-			self.master.target_component,
-			mavutil.mavlink.MAV_CMD_MISSION_START,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-		)
-		ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-		if (
-			ack_msg
-			and ack_msg.command == mavutil.mavlink.MAV_CMD_MISSION_START
-			and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED
-		):
-			self.logger.info("MAVLink: Mission start accepted.")
-			return True
-		self.logger.error(f"MAVLink: Mission start failed: {ack_msg}")
+		for attempt in range(1, retries + 1):
+			self.master.mav.command_long_send(
+				self.master.target_system,
+				self.master.target_component,
+				mavutil.mavlink.MAV_CMD_MISSION_START,
+				0,
+				0,
+				0,
+				0,
+				0,
+				0,
+				0,
+				0,
+			)
+			ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
+			if (
+				ack_msg
+				and ack_msg.command == mavutil.mavlink.MAV_CMD_MISSION_START
+				and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED
+			):
+				self.logger.info("MAVLink: Mission start accepted.")
+				return True
+			self.logger.warning(
+				f"MAVLink: Mission start attempt {attempt}/{retries} failed: {ack_msg}. "
+				+ (f"Retrying in {retry_delay}s..." if attempt < retries else "No more retries.")
+			)
+			if attempt < retries:
+				time.sleep(retry_delay)
+		self.logger.error("MAVLink: Mission start failed after all retries.")
 		return False
 
 	def wait_for_waypoint_reached(self, waypoint_sequence_id, timeout_seconds=120):
@@ -370,11 +393,14 @@ class MavlinkController:
 				waypoints.append((south_lat_deg, current_track_lon_deg, altitude_m))
 		return waypoints
 
-	def generate_and_upload_search_grid_mission(self, center_lat, center_lon, grid_size_m, swath_width_m, altitude_m):
+	def generate_and_upload_search_grid_mission(
+		self, center_lat, center_lon, grid_size_m, swath_width_m, altitude_m,
+		include_takeoff: bool = False, takeoff_altitude_m: float = None, climb_speed_ms: float = 8.0,
+	):
 		if not self.is_connected():
 			self.logger.error("MAVLink: Not connected. Cannot generate/upload search grid.")
 			return None
-			
+
 		grid_waypoints_tuples = self._calculate_rectangular_grid_waypoints(
 			center_lat, center_lon, grid_size_m, grid_size_m, swath_width_m, altitude_m
 		)
@@ -383,6 +409,25 @@ class MavlinkController:
 			return None
 
 		waypoints_data_for_upload = []
+		if include_takeoff:
+			ta = takeoff_altitude_m if takeoff_altitude_m is not None else altitude_m
+			drone_pos = self.get_current_position()
+			takeoff_lat = drone_pos["lat"] if drone_pos else center_lat
+			takeoff_lon = drone_pos["lon"] if drone_pos else center_lon
+			waypoints_data_for_upload = [
+				(
+					takeoff_lat, takeoff_lon, 0.0,
+					mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
+					2.0, climb_speed_ms, -1.0, 0.0,
+				),
+				(
+					takeoff_lat, takeoff_lon, ta,
+					mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+					0.0, 0.0, 0.0, float('nan'),
+				),
+			]
+			self.logger.info(f"Grid search takeoff: {ta} m at {climb_speed_ms} m/s.")
+
 		path_positions = []
 		for lat, lon, alt in grid_waypoints_tuples:
 			waypoints_data_for_upload.append(
@@ -530,6 +575,9 @@ class MavlinkController:
 		corridor_half_width_m: float,
 		swath_m: float,
 		altitude_m: float,
+		takeoff_altitude_m: float = 100.0,
+		climb_speed_ms: float = 8.0,
+		include_takeoff: bool = True,
 	):
 		"""
 		Generate and upload a curved-track-following MOB search mission.
@@ -562,6 +610,26 @@ class MavlinkController:
 				self.logger.info("MOB search: reversed waypoint order to start at closer end.")
 
 		waypoints_data = []
+		if include_takeoff:
+			# Prepend DO_CHANGE_SPEED (climb) + NAV_TAKEOFF for aerial vehicles.
+			takeoff_lat = drone_pos["lat"] if drone_pos else 0.0
+			takeoff_lon = drone_pos["lon"] if drone_pos else 0.0
+			climb_speed_wp = (
+				takeoff_lat, takeoff_lon, 0.0,
+				mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
+				2.0, climb_speed_ms, -1.0, 0.0,
+			)
+			takeoff_wp = (
+				takeoff_lat, takeoff_lon, takeoff_altitude_m,
+				mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+				0.0, 0.0, 0.0, float('nan'),
+			)
+			waypoints_data = [climb_speed_wp, takeoff_wp]
+			self.logger.info(
+				f"MOB takeoff: {takeoff_altitude_m} m at {climb_speed_ms} m/s requested climb rate."
+			)
+		else:
+			self.logger.info("MOB search: skipping takeoff (surface vehicle).")
 		path_positions = []
 		for lat, lon, alt in waypoints_tuples:
 			waypoints_data.append(
